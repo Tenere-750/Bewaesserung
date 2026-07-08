@@ -1,0 +1,16 @@
+{
+    "id": "{6C3AE0A1-4C6E-4B9D-9B47-2E9F5A7C1D33}",
+    "name": "Bewaesserungssteuerung",
+    "type": 3,
+    "vendor": "",
+    "aliases": [
+        "Bewässerung",
+        "Beregnung",
+        "Irrigation"
+    ],
+    "parentRequirements": [],
+    "childRequirements": [],
+    "implemented": [],
+    "prefix": "BWS",
+    "url": ""
+}
