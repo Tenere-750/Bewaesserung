@@ -43,17 +43,16 @@ class Bewaesserungssteuerung extends IPSModule
         $this->RegisterPropertyInteger('PumpInstanceID', 0);
 
         $defaultZones = json_encode([
-            ['Name' => 'Zone 1',       'ValveInstanceID' => 0, 'TravelTime' => 7, 'Lawn' => false, 'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
-            ['Name' => 'Zone 2',       'ValveInstanceID' => 0, 'TravelTime' => 7, 'Lawn' => false, 'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
-            ['Name' => 'Zone 3',       'ValveInstanceID' => 0, 'TravelTime' => 7, 'Lawn' => false, 'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
-            ['Name' => 'Zone 4',       'ValveInstanceID' => 0, 'TravelTime' => 7, 'Lawn' => false, 'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
-            ['Name' => 'Zone 5',       'ValveInstanceID' => 0, 'TravelTime' => 7, 'Lawn' => false, 'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
-            ['Name' => 'Rasen links',  'ValveInstanceID' => 0, 'TravelTime' => 7, 'Lawn' => true,  'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
-            ['Name' => 'Rasen rechts', 'ValveInstanceID' => 0, 'TravelTime' => 7, 'Lawn' => true,  'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
+            ['Name' => 'Zone 1',       'ValveInstanceID' => 0, 'TravelTime' => 7, 'DefaultDuration' => 10, 'Lawn' => false, 'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
+            ['Name' => 'Zone 2',       'ValveInstanceID' => 0, 'TravelTime' => 7, 'DefaultDuration' => 10, 'Lawn' => false, 'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
+            ['Name' => 'Zone 3',       'ValveInstanceID' => 0, 'TravelTime' => 7, 'DefaultDuration' => 10, 'Lawn' => false, 'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
+            ['Name' => 'Zone 4',       'ValveInstanceID' => 0, 'TravelTime' => 7, 'DefaultDuration' => 10, 'Lawn' => false, 'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
+            ['Name' => 'Zone 5',       'ValveInstanceID' => 0, 'TravelTime' => 7, 'DefaultDuration' => 10, 'Lawn' => false, 'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
+            ['Name' => 'Rasen links',  'ValveInstanceID' => 0, 'TravelTime' => 7, 'DefaultDuration' => 10, 'Lawn' => true,  'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
+            ['Name' => 'Rasen rechts', 'ValveInstanceID' => 0, 'TravelTime' => 7, 'DefaultDuration' => 10, 'Lawn' => true,  'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
         ]);
         $this->RegisterPropertyString('Zones', $defaultZones);
         $this->RegisterPropertyString('LawnName', 'Rasen');
-        $this->RegisterPropertyInteger('LawnManualDuration', 10); // Minuten je Teilfläche bei manueller Bedienung
 
         $this->RegisterPropertyString('Sequence1', '[]');   // [{Zone, Duration, Interval, Parallel, Active}]
         $this->RegisterPropertyString('Sequence2', '[]');
@@ -70,6 +69,9 @@ class Bewaesserungssteuerung extends IPSModule
         $this->RegisterAttributeString('LastRun', '{}');    // letzter Bewässerungstag je Sequenz/logischer Zone
         $this->RegisterAttributeString('Open', '[]');       // aktuell geöffnete logische Zonen (Indizes)
         $this->RegisterAttributeString('OpenMembers', '{}'); // je logischer Zone: aktuell offene Teilventile (für "Rasen")
+        $this->RegisterAttributeString('ZoneRunSince', '{}');   // je logischer Zone: Unix-Zeit, seit wann sie aktiv bewässert (Pumpe an + Ventil offen)
+        $this->RegisterAttributeString('ZoneDayAccum', '{}');   // je logischer Zone: Laufzeit heute in Sekunden
+        $this->RegisterAttributeString('ZoneTotalAccum', '{}'); // je logischer Zone: Laufzeit gesamt in Sekunden
 
         // ------------------------------------------------------------------
         // Variablenprofile
@@ -167,7 +169,7 @@ class Bewaesserungssteuerung extends IPSModule
         }
 
         // ------------------------------------------------------------------
-        // Manuelle Schalter pro logischer Zone (nach Rasen-Zusammenlegung)
+        // Manuelle Schalter + Laufzeitanzeige pro logischer Zone (nach Rasen-Zusammenlegung)
         // ------------------------------------------------------------------
         $logical = $this->logicalZones();
         for ($i = 0; $i < self::MAX_ZONES; $i++) {
@@ -177,10 +179,12 @@ class Bewaesserungssteuerung extends IPSModule
             if ($used) {
                 $this->EnableAction('ManualZ' . $i);
             }
+            $this->MaintainVariable('ZRunDay' . $i, $name . ' – Laufzeit heute', VARIABLETYPE_INTEGER, 'BWS.Minutes', 400 + $i, $used);
+            $this->MaintainVariable('ZRunTotal' . $i, $name . ' – Laufzeit gesamt', VARIABLETYPE_FLOAT, 'BWS.Hours', 500 + $i, $used);
         }
 
         // ------------------------------------------------------------------
-        // Laufzeitanzeige
+        // Laufzeitanzeige (Pumpe gesamt)
         // ------------------------------------------------------------------
         $this->RegisterVariableInteger('RuntimeDay', 'Pumpenlaufzeit heute', 'BWS.Minutes', 300);
         $this->RegisterVariableFloat('RuntimeTotal', 'Pumpenlaufzeit gesamt', 'BWS.Hours', 310);
@@ -188,6 +192,7 @@ class Bewaesserungssteuerung extends IPSModule
         // Zeitplan-Prüfung alle 30 Sekunden
         $this->SetTimerInterval('Schedule', 30000);
         $this->updateRuntimeDisplay();
+        $this->updateAllZoneRuntimeDisplays();
     }
 
     // ======================================================================
@@ -277,9 +282,13 @@ class Bewaesserungssteuerung extends IPSModule
                 $skippedMoist[] = $zones[$idx]['name'];
                 continue;
             }
+            // Dauer: 0 in der Sequenz-Zeile = Standard-Dauer der Zone verwenden,
+            // ein Wert > 0 überschreibt sie nur für diese eine Zeile.
+            $rowDuration = (int)($row['Duration'] ?? 0);
+            $effectiveDuration = $rowDuration > 0 ? $rowDuration : $zones[$idx]['defaultDuration'];
             $due[] = [
                 'idx' => $idx,
-                'dur' => max(1, (int)($row['Duration'] ?? 10)) * 60,
+                'dur' => max(1, $effectiveDuration) * 60,
                 'par' => !empty($row['Parallel'])
             ];
         }
@@ -410,7 +419,7 @@ class Bewaesserungssteuerung extends IPSModule
     }
 
     /**
-     * Setzt Pumpenlaufzeiten und Zyklenzähler zurück.
+     * Setzt Pumpenlaufzeiten, Zonenlaufzeiten und Zyklenzähler zurück.
      */
     public function ResetCounters(): void
     {
@@ -419,17 +428,28 @@ class Bewaesserungssteuerung extends IPSModule
         if ($this->ReadAttributeInteger('PumpOnSince') > 0) {
             $this->WriteAttributeInteger('PumpOnSince', time());
         }
+
+        // Zonenlaufzeiten zurücksetzen; aktuell laufende Zonen zählen ab jetzt neu
+        $zoneRunSinceAll = json_decode($this->ReadAttributeString('ZoneRunSince'), true) ?: [];
+        foreach ($zoneRunSinceAll as $idxStr => $ts) {
+            $zoneRunSinceAll[$idxStr] = time();
+        }
+        $this->WriteAttributeString('ZoneRunSince', json_encode($zoneRunSinceAll));
+        $this->WriteAttributeString('ZoneDayAccum', '{}');
+        $this->WriteAttributeString('ZoneTotalAccum', '{}');
+
         for ($i = 0; $i < self::MAX_ZONES; $i++) {
             if (@$this->GetIDForIdent('CyclesP' . $i) !== false) {
                 $this->SetValue('CyclesP' . $i, 0);
             }
         }
         $this->updateRuntimeDisplay();
+        $this->updateAllZoneRuntimeDisplays();
     }
 
     /**
      * Timer: prüft Startzeiten (alle 30 s), setzt Tageszähler um Mitternacht
-     * zurück und aktualisiert die Laufzeitanzeige bei laufender Pumpe.
+     * zurück und aktualisiert die Laufzeitanzeigen (Pumpe + je Zone).
      */
     public function CheckSchedule(): void
     {
@@ -444,9 +464,20 @@ class Bewaesserungssteuerung extends IPSModule
                 $this->WriteAttributeInteger('PumpOnSince', time());
             }
             $this->WriteAttributeInteger('DayAccum', 0);
+
+            // Gleiches für alle gerade aktiv bewässernden Zonen
+            $zoneRunSinceAll = json_decode($this->ReadAttributeString('ZoneRunSince'), true) ?: [];
+            foreach ($zoneRunSinceAll as $idxStr => $ts) {
+                $this->addZoneTotalAccum((int)$idxStr, time() - (int)$ts);
+                $zoneRunSinceAll[$idxStr] = time();
+            }
+            $this->WriteAttributeString('ZoneRunSince', json_encode($zoneRunSinceAll));
+            $this->WriteAttributeString('ZoneDayAccum', '{}');
+
             $this->WriteAttributeString('DayDate', $today);
         }
         $this->updateRuntimeDisplay();
+        $this->updateAllZoneRuntimeDisplays();
 
         // --- Automatikstart -----------------------------------------------
         if (!$this->GetValue('Active')) {
@@ -554,7 +585,7 @@ class Bewaesserungssteuerung extends IPSModule
             if ($isLawn) {
                 // Eigene, in sich geschlossene Kette: Teil 1 komplett fertig,
                 // Pumpe dazwischen aus, dann Teil 2 – nie gleichzeitig offen.
-                $durSeconds = max(1, $this->ReadPropertyInteger('LawnManualDuration')) * 60;
+                $durSeconds = max(1, $zones[$idx]['defaultDuration']) * 60;
                 $this->enqueue($this->lawnChainSteps($zones[$idx], $idx, $durSeconds));
                 return;
             }
@@ -706,6 +737,7 @@ class Bewaesserungssteuerung extends IPSModule
         $targets = $member === null ? array_keys($valves) : [$member];
 
         $openMembers = $this->zoneOpenMembers($idx);
+        $prevCount = count($openMembers);
         foreach ($targets as $t) {
             if (!isset($valves[$t])) {
                 continue;
@@ -725,9 +757,10 @@ class Bewaesserungssteuerung extends IPSModule
             }
         }
         $this->setZoneOpenMembers($idx, $openMembers);
+        $newCount = count($openMembers);
 
         $open = $this->openList();
-        if (count($openMembers) > 0) {
+        if ($newCount > 0) {
             if (!in_array($idx, $open, true)) {
                 $open[] = $idx;
             }
@@ -736,10 +769,22 @@ class Bewaesserungssteuerung extends IPSModule
         }
         $this->WriteAttributeString('Open', json_encode($open));
 
+        // Zonen-Laufzeit: zählt die Zeit, in der die Pumpe läuft UND diese Zone
+        // offen ist (tatsächliche Bewässerungszeit). Wird die Zone neu geöffnet
+        // während die Pumpe schon läuft (z. B. zusätzliche manuelle Zone oder
+        // Sequenz-Übergang), startet die Zählung sofort; startet sie erst mit
+        // der Pumpe selbst, übernimmt das setPump().
+        if ($prevCount === 0 && $newCount > 0 && $this->ReadAttributeInteger('PumpOnSince') > 0) {
+            $this->startZoneRuntime($idx);
+        }
+        if ($prevCount > 0 && $newCount === 0) {
+            $this->stopZoneRuntime($idx);
+        }
+
         // Zonen-Schalter im WebFront spiegelt immer den echten Zustand: an, solange
         // mindestens ein Teilventil offen ist (bei "Rasen" also während der ganzen Kette)
         if (@$this->GetIDForIdent('ManualZ' . $idx) !== false) {
-            $this->SetValue('ManualZ' . $idx, count($openMembers) > 0);
+            $this->SetValue('ManualZ' . $idx, $newCount > 0);
         }
     }
 
@@ -810,6 +855,10 @@ class Bewaesserungssteuerung extends IPSModule
             if ($this->ReadAttributeInteger('PumpOnSince') === 0) {
                 $this->knxSwitch($instanceID, true);
                 $this->WriteAttributeInteger('PumpOnSince', time());
+                // Für alle bereits offenen Zonen beginnt jetzt die tatsächliche Bewässerung
+                foreach ($this->openList() as $i) {
+                    $this->startZoneRuntime($i);
+                }
             }
         } else {
             $this->knxSwitch($instanceID, false);
@@ -819,6 +868,10 @@ class Bewaesserungssteuerung extends IPSModule
                 $this->WriteAttributeInteger('DayAccum', $this->ReadAttributeInteger('DayAccum') + $delta);
                 $this->WriteAttributeInteger('TotalAccum', $this->ReadAttributeInteger('TotalAccum') + $delta);
                 $this->WriteAttributeInteger('PumpOnSince', 0);
+            }
+            // Für alle noch als "laufend" gezählten Zonen die Bewässerungszeit stoppen
+            foreach ($this->openList() as $i) {
+                $this->stopZoneRuntime($i);
             }
             $this->updateRuntimeDisplay();
         }
@@ -891,6 +944,8 @@ class Bewaesserungssteuerung extends IPSModule
             $z['ValveInstanceID'] = (int)($z['ValveInstanceID'] ?? 0);
             $t = (int)($z['TravelTime'] ?? 7);
             $z['TravelTime'] = $t > 0 ? $t : 7;
+            $d = (int)($z['DefaultDuration'] ?? 10);
+            $z['DefaultDuration'] = $d > 0 ? $d : 10;
             $z['Lawn'] = !empty($z['Lawn']);
             $z['UseSensor'] = !empty($z['UseSensor']);
             $z['SensorID'] = (int)($z['SensorID'] ?? 0);
@@ -953,14 +1008,18 @@ class Bewaesserungssteuerung extends IPSModule
         }
 
         return [
-            'name'       => $name,
-            'valves'     => $valves,
-            'travel'     => $travel,
-            'sensors'    => $sensors,
-            'physIdx'    => $physIdx,
+            'name'            => $name,
+            'valves'          => $valves,
+            'travel'          => $travel,
+            'sensors'         => $sensors,
+            'physIdx'         => $physIdx,
+            // Standard-Bewässerungsdauer (Minuten) dieses Kreises: bei "Rasen"
+            // die Vorgabe der ERSTEN als "Lawn" markierten Zeile, da die
+            // Sequenz-Dauer bei "Rasen" je Teilfläche gilt.
+            'defaultDuration' => (int)($members[0]['DefaultDuration'] ?? 10),
             // "sequential" = mehr als ein Ventil -> darf NIE gleichzeitig offen sein,
             // die Teilventile werden immer strikt nacheinander geschaltet (z. B. "Rasen").
-            'sequential' => count($valves) > 1,
+            'sequential'      => count($valves) > 1,
         ];
     }
 
@@ -983,6 +1042,94 @@ class Bewaesserungssteuerung extends IPSModule
         $total = $this->ReadAttributeInteger('TotalAccum') + $running;
         $this->SetValue('RuntimeDay', (int)round($day / 60));
         $this->SetValue('RuntimeTotal', round($total / 3600, 2));
+    }
+
+    // ------------------------------------------------------------------
+    // Laufzeit je logischer Zone (Kreis): zählt die Zeit, in der die Pumpe
+    // läuft UND die jeweilige Zone offen ist (tatsächliche Bewässerungszeit).
+    // ------------------------------------------------------------------
+
+    private function zoneRunSince(int $idx): int
+    {
+        $all = json_decode($this->ReadAttributeString('ZoneRunSince'), true) ?: [];
+        return (int)($all[(string)$idx] ?? 0);
+    }
+
+    private function setZoneRunSince(int $idx, int $ts): void
+    {
+        $all = json_decode($this->ReadAttributeString('ZoneRunSince'), true) ?: [];
+        if ($ts > 0) {
+            $all[(string)$idx] = $ts;
+        } else {
+            unset($all[(string)$idx]);
+        }
+        $this->WriteAttributeString('ZoneRunSince', json_encode($all));
+    }
+
+    private function zoneDayAccum(int $idx): int
+    {
+        $all = json_decode($this->ReadAttributeString('ZoneDayAccum'), true) ?: [];
+        return (int)($all[(string)$idx] ?? 0);
+    }
+
+    private function addZoneDayAccum(int $idx, int $delta): void
+    {
+        $all = json_decode($this->ReadAttributeString('ZoneDayAccum'), true) ?: [];
+        $all[(string)$idx] = (int)($all[(string)$idx] ?? 0) + $delta;
+        $this->WriteAttributeString('ZoneDayAccum', json_encode($all));
+    }
+
+    private function zoneTotalAccum(int $idx): int
+    {
+        $all = json_decode($this->ReadAttributeString('ZoneTotalAccum'), true) ?: [];
+        return (int)($all[(string)$idx] ?? 0);
+    }
+
+    private function addZoneTotalAccum(int $idx, int $delta): void
+    {
+        $all = json_decode($this->ReadAttributeString('ZoneTotalAccum'), true) ?: [];
+        $all[(string)$idx] = (int)($all[(string)$idx] ?? 0) + $delta;
+        $this->WriteAttributeString('ZoneTotalAccum', json_encode($all));
+    }
+
+    private function startZoneRuntime(int $idx): void
+    {
+        if ($this->zoneRunSince($idx) === 0) {
+            $this->setZoneRunSince($idx, time());
+        }
+    }
+
+    private function stopZoneRuntime(int $idx): void
+    {
+        $since = $this->zoneRunSince($idx);
+        if ($since > 0) {
+            $delta = time() - $since;
+            $this->addZoneDayAccum($idx, $delta);
+            $this->addZoneTotalAccum($idx, $delta);
+            $this->setZoneRunSince($idx, 0);
+        }
+        $this->updateZoneRuntimeDisplay($idx);
+    }
+
+    private function updateZoneRuntimeDisplay(int $idx): void
+    {
+        $since = $this->zoneRunSince($idx);
+        $running = $since > 0 ? time() - $since : 0;
+        $day = $this->zoneDayAccum($idx) + $running;
+        $total = $this->zoneTotalAccum($idx) + $running;
+        if (@$this->GetIDForIdent('ZRunDay' . $idx) !== false) {
+            $this->SetValue('ZRunDay' . $idx, (int)round($day / 60));
+        }
+        if (@$this->GetIDForIdent('ZRunTotal' . $idx) !== false) {
+            $this->SetValue('ZRunTotal' . $idx, round($total / 3600, 2));
+        }
+    }
+
+    private function updateAllZoneRuntimeDisplays(): void
+    {
+        for ($i = 0; $i < self::MAX_ZONES; $i++) {
+            $this->updateZoneRuntimeDisplay($i);
+        }
     }
 
     private function sem(): string
@@ -1014,11 +1161,11 @@ class Bewaesserungssteuerung extends IPSModule
                 'edit'    => ['type' => 'Select', 'options' => $zoneOptions]
             ],
             [
-                'caption' => 'Dauer (bei „Rasen“: je Teilfläche)',
+                'caption' => 'Dauer (0 = Standard der Zone verwenden)',
                 'name'    => 'Duration',
-                'width'   => '190px',
-                'add'     => 10,
-                'edit'    => ['type' => 'NumberSpinner', 'suffix' => ' min', 'minimum' => 1]
+                'width'   => '230px',
+                'add'     => 0,
+                'edit'    => ['type' => 'NumberSpinner', 'suffix' => ' min', 'minimum' => 0]
             ],
             [
                 'caption' => 'Intervall',
@@ -1056,13 +1203,6 @@ class Bewaesserungssteuerung extends IPSModule
                     'caption' => 'Anzeigename der zusammengelegten Rasen-Zone'
                 ],
                 [
-                    'type'    => 'NumberSpinner',
-                    'name'    => 'LawnManualDuration',
-                    'caption' => 'Rasen manuell: Dauer je Teilfläche',
-                    'suffix'  => ' min',
-                    'minimum' => 1
-                ],
-                [
                     'type'    => 'List',
                     'name'    => 'Zones',
                     'caption' => 'Physische Beregnungszonen (Reihenfolge = Zonennummer)',
@@ -1090,6 +1230,13 @@ class Bewaesserungssteuerung extends IPSModule
                             'width'   => '100px',
                             'add'     => 7,
                             'edit'    => ['type' => 'NumberSpinner', 'suffix' => ' s', 'minimum' => 0]
+                        ],
+                        [
+                            'caption' => 'Standard-Bewässerungsdauer',
+                            'name'    => 'DefaultDuration',
+                            'width'   => '190px',
+                            'add'     => 10,
+                            'edit'    => ['type' => 'NumberSpinner', 'suffix' => ' min', 'minimum' => 1]
                         ],
                         [
                             'caption' => 'Teil von „Rasen“ (läuft nacheinander)',
