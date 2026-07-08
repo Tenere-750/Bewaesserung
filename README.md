@@ -44,6 +44,10 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
 - Manuelle Steuerung jeder (logischen) Zone im WebFront
 - Zwei Automatik-Sequenzen pro Tag (morgens/abends), Startzeit im WebFront einstellbar
 - Reihenfolge der Zonen **pro Sequenz** frei definierbar (= Zeilenreihenfolge in der Liste)
+- **Bewässerungsdauer je Kreis konfigurierbar**: jede Zone hat eine eigene
+  Standard-Bewässerungsdauer (in der Zonenliste). Diese wird in Sequenz 1
+  und 2 automatisch vorbelegt, lässt sich dort aber pro Zeile für einzelne
+  Läufe überschreiben (z. B. morgens kürzer, abends länger)
 - Bewässerungs-**Intervall pro Zone und Sequenz** (jeden Tag, jeden 2. Tag, alle 3 Tage, …);
   die Sequenz überspringt automatisch alle Zonen, die heute nicht fällig sind
 - Maximal 2 Zonen gleichzeitig geöffnet — **auch innerhalb einer Sequenz**:
@@ -55,6 +59,11 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
 - Zonenwechsel in der Sequenz: **Ventil n+1 auf → 10 s Überlapp → Ventil n zu**
   (die Pumpe läuft dabei durch, sie arbeitet nie gegen komplett geschlossene Ventile)
 - Pumpenlaufzeit **heute** (Minuten) und **gesamt** (Stunden) im WebFront
+- **Laufzeit je Kreis** (heute in Minuten, gesamt in Stunden): gezählt wird
+  die Zeit, in der die Pumpe läuft **und** die jeweilige Zone offen ist –
+  also die tatsächliche Bewässerungszeit, nicht die reine Ventil-Offen-Zeit
+  inklusive Verfahrzeiten. Bei „Rasen" wird jede Teilfläche einzeln
+  mitgezählt, die Pumpenpause zwischen den beiden Seiten zählt nicht mit.
 - Zyklenzähler pro Motorkugelhahn (jedes Öffnen = 1 Zyklus)
 
 Alle Wartezeiten laufen **nicht blockierend** über eine Timer-gesteuerte
@@ -97,9 +106,16 @@ Schritt-Warteschlange – kein `IPS_Sleep`, keine hängenden PHP-Threads.
    - **Motorkugelhahn – KNX-Instanz** — die „Schalten"-Geräteinstanz (DPT1)
      dieses Ventils auswählen
    - **Verfahrzeit** — Verfahrzeit des Motorkugelhahns in Sekunden
+   - **Standard-Bewässerungsdauer** — die übliche Dauer, mit der diese
+     Zone bewässert wird. Dient als Vorgabe für neue Sequenz-Zeilen (dort
+     lässt sie sich pro Zeile überschreiben) und wird auch für die
+     manuelle Bedienung von „Rasen" verwendet (siehe unten)
    - **Teil von „Rasen"** — ankreuzen, wenn diese Zone mit anderen
      „Rasen"-Zonen zu einem gemeinsamen Kreis zusammengefasst werden soll
-     (im Standard sind „Rasen links" und „Rasen rechts" schon markiert)
+     (im Standard sind „Rasen links" und „Rasen rechts" schon markiert).
+     Bei „Rasen" gilt die Standard-Bewässerungsdauer der **ersten** als
+     „Lawn" markierten Zeile für den ganzen zusammengelegten Kreis (je
+     Teilfläche, siehe unten)
    - **Bodenfeuchtesensor nutzen** — optional aktivieren
    - **Sensor-Variable** — vorhandene IP-Symcon-Variable mit dem
      Feuchtemesswert auswählen (nur relevant, wenn Sensor genutzt wird)
@@ -110,20 +126,20 @@ Schritt-Warteschlange – kein `IPS_Sleep`, keine hängenden PHP-Threads.
      resistiven/Rohwert-Sensoren); Standard ist „hoher Wert = feucht"
    - Die Zeilenreihenfolge bestimmt die spätere Zonennummer (nach der
      Rasen-Zusammenlegung)
-4. **Sequenz 1 / Sequenz 2**: pro Zeile logische Zone, Bewässerungsdauer
-   (Minuten), Intervall (Tage), „Parallel zur vorherigen Zone" und
-   Aktiv-Haken. Die Zeilenreihenfolge ist die Bewässerungsreihenfolge.
-   Dieselbe Zone darf in beiden Sequenzen mit unterschiedlichen Intervallen
-   stehen. Die Zonen-Auswahl zeigt bereits die logischen Kreise nach der
-   Rasen-Zusammenlegung. **Wichtig bei „Rasen"**: die eingetragene Dauer
-   gilt **je Teilfläche** (Rasen links UND Rasen rechts laufen jeweils so
+4. **Sequenz 1 / Sequenz 2**: pro Zeile logische Zone, Dauer, Intervall
+   (Tage), „Parallel zur vorherigen Zone" und Aktiv-Haken. Die
+   Zeilenreihenfolge ist die Bewässerungsreihenfolge. Die Zonen-Auswahl
+   zeigt bereits die logischen Kreise nach der Rasen-Zusammenlegung.
+   **Dauer**: der Wert **0** bedeutet „Standard-Bewässerungsdauer der Zone
+   verwenden" (so ist jede neu angelegte Zeile voreingestellt); ein Wert
+   **> 0** überschreibt die Dauer nur für diese eine Zeile — praktisch,
+   wenn dieselbe Zone morgens kürzer und abends länger laufen soll.
+   Dieselbe Zone darf in beiden Sequenzen zusätzlich mit unterschiedlichen
+   Intervallen stehen. **Wichtig bei „Rasen"**: die wirksame Dauer gilt
+   **je Teilfläche** (Rasen links UND Rasen rechts laufen jeweils so
    lange) – die tatsächliche Gesamtlaufzeit ist also etwa doppelt so lang
    plus Verfahrzeiten. Der „Parallel"-Haken hat für „Rasen" keine Wirkung.
-5. **Rasen manuell: Dauer je Teilfläche**: legt fest, wie lange jede
-   Teilfläche läuft, wenn „Rasen" von Hand über den WebFront-Schalter
-   gestartet wird (dort gibt es keine Dauer-Eingabe, daher dieser feste
-   Wert).
-6. Übernehmen. Die WebFront-Variablen werden automatisch angelegt.
+5. Übernehmen. Die WebFront-Variablen werden automatisch angelegt.
 
 ## Bedienung im WebFront
 
