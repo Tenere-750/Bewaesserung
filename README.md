@@ -41,15 +41,19 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
   gelegten Rasen-Zone genügt es, wenn **eine** der beiden Teilflächen
   trocken meldet, dann wird gegossen (siehe „Sensor-Logik im Detail" unten).
 - Master-Schalter
-- Manuelle Steuerung jeder (logischen) Zone im WebFront
+- Manuelle Steuerung jeder (logischen) Zone im WebFront, **mit direkt im
+  WebFront einstellbarer Bewässerungsdauer je Kreis** – die Zone schaltet
+  nach Ablauf automatisch wieder ab, statt unbegrenzt offen zu bleiben
 - Zwei Automatik-Sequenzen pro Tag (morgens/abends), Startzeit im WebFront einstellbar
 - Reihenfolge der Zonen **pro Sequenz** frei definierbar (= Zeilenreihenfolge in der Liste)
 - **Bewässerungsdauer je Kreis konfigurierbar**: jede Zone hat eine eigene
   Standard-Bewässerungsdauer (in der Zonenliste). Diese wird in Sequenz 1
   und 2 automatisch vorbelegt, lässt sich dort aber pro Zeile für einzelne
   Läufe überschreiben (z. B. morgens kürzer, abends länger)
-- Bewässerungs-**Intervall pro Zone und Sequenz** (jeden Tag, jeden 2. Tag, alle 3 Tage, …);
-  die Sequenz überspringt automatisch alle Zonen, die heute nicht fällig sind
+- Bewässerungs-**Intervall pro Zone und Sequenz**, als klare Auswahl von
+  „täglich" bis „wöchentlich" (alle 2, 3, 4, 5, 6 oder 7 Tage); die Sequenz
+  überspringt automatisch alle Zonen, die heute nicht fällig sind, und
+  rückt in der konfigurierten Reihenfolge zur nächsten fälligen Zone vor
 - Maximal 2 Zonen gleichzeitig geöffnet — **auch innerhalb einer Sequenz**:
   Zonen lassen sich per Haken „Parallel zur vorherigen Zone" zu Zweier-
   gruppen koppeln, die gemeinsam bewässert werden; der Gruppenwechsel ist
@@ -143,6 +147,13 @@ Schritt-Warteschlange – kein `IPS_Sleep`, keine hängenden PHP-Threads.
 
 ## Bedienung im WebFront
 
+Die Instanz gliedert sich in zwei Bereiche: die **Steuerung** direkt bei der
+Instanz und eine Unterkategorie **„Statistik"** mit allen Laufzeiten und
+Zyklenzählern – so sind Bedienelemente und Auswertung im WebFront klar
+getrennt.
+
+### Steuerung
+
 | Variable | Funktion |
 |---|---|
 | Master-Schalter | Aus = sofortiger geordneter Stopp, Automatik gesperrt |
@@ -150,8 +161,15 @@ Schritt-Warteschlange – kein `IPS_Sleep`, keine hängenden PHP-Threads.
 | Status | Klartext, was gerade passiert (inkl. wegen Feuchte übersprungener Zonen) |
 | Startzeit Sequenz 1/2 | Uhrzeit-Eingabe für den Automatikstart |
 | Automatik Sequenz 1/2 | Automatikstart einzeln aktivieren/deaktivieren |
-| Zonen-Schalter | manuelle Bewässerung; zeigt auch im Automatikbetrieb den echten Ventilzustand; „Rasen" startet beim Einschalten automatisch die komplette Kette (links, Pumpenpause, rechts) und bleibt so lange „an", bis beide Teilflächen fertig sind oder der Schalter vorzeitig ausgeschaltet wird |
+| „…" – manuelle Dauer | pro Kreis direkt im WebFront einstellbar (Minuten); bestimmt, wie lange die Zone beim nächsten manuellen Einschalten bewässert wird. Voreingestellt mit der Standard-Bewässerungsdauer aus der Zonenkonfiguration, hier aber jederzeit ohne Formular anpassbar |
+| Zonen-Schalter | manuelle Bewässerung: öffnet die Zone und schließt sie **automatisch** nach Ablauf der oben eingestellten Dauer wieder (Pumpe wird dabei geordnet mitgeschaltet). Vorzeitiges Ausschalten bricht sauber ab. „Rasen" arbeitet dabei die komplette Kette ab (Teilfläche 1, Pumpenpause, Teilfläche 2, jeweils für die eingestellte Dauer je Teilfläche) und schaltet sich danach selbst wieder aus |
+
+### Statistik (Unterkategorie)
+
+| Variable | Funktion |
+|---|---|
 | Pumpenlaufzeit heute/gesamt | wird live aktualisiert |
+| „…" – Laufzeit heute/gesamt | je Kreis, tatsächliche Bewässerungszeit (Pumpe an + Ventil offen) |
 | Zyklen Kugelhahn | Öffnungszyklen je physischem Ventil (auch innerhalb „Rasen" getrennt) |
 
 ## Sensor-Logik im Detail
@@ -201,6 +219,39 @@ Schritt-Warteschlange – kein `IPS_Sleep`, keine hängenden PHP-Threads.
   Sequenzen und zum Zurücksetzen der Zähler. Per Skript:
   `BWS_StartSequence(<InstanzID>, 1|2);`, `BWS_StopAll(<InstanzID>);`,
   `BWS_ResetCounters(<InstanzID>);`
+
+## Pumpen-/Ventil-Schema: Prüfung und Absicherung
+
+Auf ausdrücklichen Wunsch wurde die gesamte Schaltlogik daraufhin geprüft,
+dass in **jedem** Pfad (manuell einzeln, manuell mehrfach, Automatik-
+Sequenz, Abbruch, automatisches Abschalten) durchgängig gilt:
+
+- **Einschalten**: Ventil auf → Verfahrzeit warten → Pumpe an
+- **Ausschalten**: Pumpe aus → Verfahrzeit warten → Ventil zu
+- Sind **mehrere Zonen gleichzeitig offen**, wird die Pumpe **erst
+  ausgeschaltet, wenn die jeweils letzte noch offene Zone geschlossen
+  wird** – nie vorher, egal in welcher Reihenfolge oder zu welchem
+  Zeitpunkt die einzelnen Zonen fertig werden.
+
+Dabei wurde ein echter Fehler gefunden und behoben: Bewässerungsdauern
+liefen bisher über dieselbe serielle, instanzweite Warteschlange wie die
+kurzen Verfahrzeit-Wartezeiten. Wurde während eine Zone noch bewässerte
+eine **zweite** Zone manuell geöffnet, blieb deren Schaltbefehl bis zum
+Ablauf der Wartezeit der ersten Zone in der Warteschlange hängen, statt
+sofort ausgeführt zu werden.
+
+**Lösung**: Bewässerungsdauern laufen jetzt vollständig unabhängig von der
+seriellen Warteschlange. Diese wird nur noch für die kurzen, tatsächlich
+seriellen Schalt-Choreografien genutzt (Verfahrzeiten, Sequenz-Überlapp,
+„Rasen"-Kette). Ob eine Zone nach Ablauf ihrer Dauer automatisch schließen
+soll, wird stattdessen alle 10 Sekunden unabhängig geprüft (Funktion
+`checkManualDeadlines`) und ermittelt bei jedem Schließvorgang frisch, ob
+gerade noch andere Zonen offen sind – nur wenn nicht, wird zusätzlich die
+Pumpe (mit Verfahrzeit-Wartezeit davor) mit abgeschaltet. Damit können
+mehrere manuell geöffnete Zonen unabhängig voneinander zur richtigen Zeit
+schließen, ohne dass sich die Pumpe verfrüht abschaltet oder eine zweite
+Zone blockiert bleibt. Toleranz dieser Prüfung: bis zu 10 Sekunden – für
+Bewässerungsdauern im Minutenbereich unkritisch.
 
 ## Bekannte Annahmen / Grenzen
 
