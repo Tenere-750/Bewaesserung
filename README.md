@@ -335,6 +335,43 @@ Symcon-Meldungsfenster (inkl. der zu diesem Zeitpunkt offenen Zonen bzw.
 der verstrichenen/eingestellten Dauer). Damit lässt sich der genaue
 Auslöser im Nachhinein nachvollziehen.
 
+## Code-Audit (Version 2.9)
+
+Das gesamte Modul wurde einmal vollständig auf Konsistenz und Fehler
+geprüft. Ergebnisse:
+
+**Behobener kritischer Fehler (Race-Condition beim Schließen):** Die
+Entscheidung „ist das die letzte offene Zone → Pumpe mit ausschalten?"
+wurde bisher beim *Einreihen* der Schließ-Schritte getroffen. Wenn in
+diesem Moment eine andere Zone zwar schon zum Öffnen eingereiht, aber noch
+nicht real geöffnet war, wurde sie übersehen — die Pumpe wurde dann kurz
+nach dem Start der zweiten Zone fälschlich abgeschaltet. Jetzt läuft jedes
+Zonen-Schließen über einen neuen Warteschlangenschritt („close_zone"), der
+die Entscheidung erst im Ausführungsmoment anhand des dann tatsächlichen
+Zustands trifft. Das behebt strukturell das zuvor beobachtete Verhalten
+„Pumpe geht aus, wenn ein zweiter Kreis angeschaltet wird".
+
+**Weitere Korrekturen:**
+- Beim Zuschalten einer zweiten Zone wird nun auch vor dem
+  Sicherheits-„Pumpe an" die Verfahrzeit abgewartet — damit gilt das
+  Schema „Ventil auf → warten → Pumpe an" auch in dem Sonderfall, dass
+  diese Schritte hinter einer noch laufenden Schließ-Choreografie einer
+  anderen Zone ausgeführt werden.
+- Die Warnung „Pumpen-Rückmeldung weicht ab" wird nur noch beim Wechsel
+  des Abweichungszustands protokolliert statt alle 10 Sekunden (die
+  KNX-Rückmeldung trifft naturgemäß einige Sekunden nach dem Schaltbefehl
+  ein; das ist keine echte Abweichung).
+- Beim Start einer Sequenz aus dem Leerlauf entfällt die bisherige
+  7-Sekunden-Pause samt irreführendem „Stoppe laufende Bewässerung…"-
+  Status; das Sicherheits-Pumpe-aus bleibt (verkürzt) erhalten.
+- Veraltete Kommentare (30-Sekunden-Prüfintervall, altes „nie
+  gleichzeitig"-Rasen-Schema) an die tatsächliche Implementierung
+  angeglichen; ungenutzte Variable entfernt.
+
+**Optimierung:** Die Zonen-Konfiguration wird pro PHP-Aufruf nur noch
+einmal aus dem JSON geparst (Cache) statt bei jedem einzelnen
+Schaltschritt erneut.
+
 ## Bekannte Annahmen / Grenzen
 
 - Es wird angenommen, dass jede zu schaltende Gruppenadresse als eigene

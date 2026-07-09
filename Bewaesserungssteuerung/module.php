@@ -41,6 +41,11 @@ class Bewaesserungssteuerung extends IPSModule
 {
     private const MAX_ZONES = 12;
 
+    /** Request-lokaler Cache für logicalZones() – die Konfiguration ändert
+     *  sich innerhalb eines PHP-Aufrufs nicht, wird aber von travel(),
+     *  setValve() usw. sehr häufig benötigt. */
+    private ?array $logicalZonesCache = null;
+
     public function Create()
     {
         parent::Create();
@@ -93,6 +98,13 @@ class Bewaesserungssteuerung extends IPSModule
             IPS_SetVariableProfileText('BWS.Minutes', '', ' min');
             IPS_SetVariableProfileIcon('BWS.Minutes', 'Clock');
         }
+        // Wertebereich IMMER sicherstellen (auch wenn das Profil aus einer
+        // älteren Modulversion schon existiert, aber noch ohne Bereich
+        // angelegt wurde): ohne Min/Max/Schrittweite lässt sich ein daran
+        // gebundenes editierbares Feld (z. B. "manuelle Dauer") im
+        // WebFront nicht bedienen – reine Anzeigevariablen sind davon
+        // nicht betroffen, da bei ihnen kein Eingabe-Element gerendert wird.
+        IPS_SetVariableProfileValues('BWS.Minutes', 0, 240, 1);
         if (!IPS_VariableProfileExists('BWS.Hours')) {
             IPS_CreateVariableProfile('BWS.Hours', VARIABLETYPE_FLOAT);
             IPS_SetVariableProfileText('BWS.Hours', '', ' h');
@@ -132,6 +144,9 @@ class Bewaesserungssteuerung extends IPSModule
     public function ApplyChanges()
     {
         parent::ApplyChanges();
+
+        // Konfiguration kann sich geändert haben -> Zonen-Cache verwerfen
+        $this->logicalZonesCache = null;
 
         // ------------------------------------------------------------------
         // Statusvariablen
@@ -595,7 +610,7 @@ class Bewaesserungssteuerung extends IPSModule
     }
 
     /**
-     * Timer: prüft Startzeiten (alle 30 s), setzt Tageszähler um Mitternacht
+     * Timer: prüft Startzeiten (alle 10 s), setzt Tageszähler um Mitternacht
      * zurück und aktualisiert die Laufzeitanzeigen (Pumpe + je Zone).
      */
     public function CheckSchedule(): void
@@ -711,7 +726,6 @@ class Bewaesserungssteuerung extends IPSModule
             return;
         }
         $open = $this->openList();
-        $pumpOn = $this->ReadAttributeInteger('PumpOnSince') > 0;
         $name = $zones[$idx]['name'];
 
         $isLawn = !empty($zones[$idx]['sequential']);
@@ -783,13 +797,18 @@ class Bewaesserungssteuerung extends IPSModule
                 $steps[] = ['cmd' => 'status', 'param' => 'Manuell: ' . $name . ' aktiv'];
             } else {
                 // Es ist schon eine andere Zone offen bzw. gerade dabei zu
-                // öffnen: Ventil einfach öffnen. "pump_on" wird
-                // sicherheitshalber TROTZDEM eingereiht (setPump() sendet
-                // den Befehl immer, auch wenn die Pumpe laut Merker schon
-                // läuft) – so schließt sich auch dann keine Lücke, wenn der
-                // Merker durch einen unterbrochenen Vorgang einmal nicht
-                // mit der Realität übereinstimmt.
-                $steps[] = ['cmd' => 'valve_on', 'zone' => $idx];
+                // öffnen: Ventil öffnen, Verfahrzeit abwarten, dann das
+                // Sicherheits-"pump_on" (setPump() sendet den Befehl immer,
+                // auch wenn die Pumpe laut Merker schon läuft). Die
+                // Verfahrzeit-Wartezeit VOR dem pump_on stellt sicher, dass
+                // das Schema "Ventil auf -> warten -> Pumpe an" auch dann
+                // eingehalten wird, wenn diese Schritte ausnahmsweise hinter
+                // einer noch laufenden Schließ-Choreografie einer anderen
+                // Zone ausgeführt werden (dann wäre die Pumpe zu diesem
+                // Zeitpunkt tatsächlich aus). Im Normalfall (Pumpe läuft)
+                // kostet die Wartezeit nichts außer ein paar Sekunden bis
+                // zur Statusanzeige.
+                $steps[] = ['cmd' => 'valve_on', 'zone' => $idx, 'post' => $this->travel($idx)];
                 $steps[] = ['cmd' => 'pump_on'];
                 $steps[] = ['cmd' => 'status', 'param' => 'Manuell: ' . $name . ' zusätzlich aktiv'];
             }
@@ -811,27 +830,12 @@ class Bewaesserungssteuerung extends IPSModule
                 // darf komplett verworfen werden, um sie sofort abzubrechen.
                 $this->clearQueue();
             }
-            // Bei einfachen Zonen wird die Warteschlange bewusst NICHT
-            // pauschal geleert: sie kann die kurze Schalt-Choreografie einer
-            // ANDEREN, gerade erst geöffneten Zone enthalten. Falls diese
-            // Zone selbst noch mitten in ihrer eigenen kurzen Öffnungs-
-            // Choreografie steckt, werden die folgenden Schließ-Schritte
-            // einfach angehängt und laufen danach korrekt durch – maximal
-            // um eine Verfahrzeit verzögert, nie in falscher Reihenfolge.
-
-            $steps = [];
-            if (count($open) === 1) {
-                // Letzte offene Zone: Pumpe aus -> Verfahrzeit -> Ventil zu
-                // (Pumpe-aus wird bewusst immer gesendet, siehe shutdownSteps())
-                $steps[] = ['cmd' => 'status', 'param' => 'Manuell: beende ' . $name];
-                $steps[] = ['cmd' => 'pump_off', 'post' => $this->travel($idx)];
-                $steps[] = ['cmd' => 'valve_off', 'zone' => $idx];
-                $steps[] = ['cmd' => 'status', 'param' => 'Bereit'];
-            } else {
-                // Weitere Zone bleibt offen: nur dieses Ventil/diese Ventile schließen
-                $steps[] = ['cmd' => 'valve_off', 'zone' => $idx];
-            }
-            $this->enqueue($steps);
+            // Das Schließen läuft über den "close_zone"-Schritt: ob dies die
+            // letzte offene Zone ist (-> Pumpe mit ausschalten) wird erst zur
+            // Ausführungszeit anhand des dann aktuellen Zustands entschieden
+            // – nicht jetzt beim Einreihen, wo evtl. noch eine gerade
+            // öffnende andere Zone unsichtbar in der Warteschlange steckt.
+            $this->enqueue([['cmd' => 'close_zone', 'zone' => $idx]]);
         }
     }
 
@@ -865,9 +869,9 @@ class Bewaesserungssteuerung extends IPSModule
     /**
      * Führt einen Warteschlangen-Schritt aus. Der Rückgabewert enthält
      * optional zusätzliche Schritte, die sofort VOR den bereits wartenden
-     * Schritten eingefügt werden (aktuell ungenutzt, aber als Erweiterungs-
-     * punkt beibehalten; die manuelle Auto-Abschaltung läuft inzwischen über
-     * checkManualDeadlines(), unabhängig von dieser seriellen Warteschlange).
+     * Schritten eingefügt werden (genutzt von "close_zone", um die
+     * Entscheidung "letzte Zone -> Pumpe mit ausschalten?" erst zur
+     * Ausführungszeit anhand des dann aktuellen Zustands zu treffen).
      */
     private function executeStep(array $step): array
     {
@@ -892,6 +896,15 @@ class Bewaesserungssteuerung extends IPSModule
                 $lr[(string)$step['param']] = date('Y-m-d');
                 $this->WriteAttributeString('LastRun', json_encode($lr));
                 break;
+            case 'close_zone':
+                // WICHTIG: erst JETZT (zur Ausführungszeit) entscheiden, ob
+                // dies die letzte offene Zone ist und die Pumpe mit
+                // ausgeschaltet werden muss. Würde das schon beim Einreihen
+                // entschieden, könnte eine zwischenzeitlich geöffnete andere
+                // Zone übersehen und die Pumpe fälschlich abgeschaltet
+                // werden, obwohl noch eine Zone bewässert (Race zwischen
+                // "Zone B öffnet" und "Zone A schließt").
+                return $this->autoCloseSteps((int)$step['zone']);
             case 'seq_end':
                 $this->SetValue('SeqControl', 0);
                 $this->SetValue('Status', 'Bereit');
@@ -902,11 +915,12 @@ class Bewaesserungssteuerung extends IPSModule
     }
 
     /**
-     * Schließt eine einzelne Zone passend zum aktuellen Zustand (genutzt,
-     * wenn die manuelle Bewässerungsdauer einer Zone abgelaufen ist). Ist die
-     * Zone inzwischen bereits geschlossen (z. B. weil der Nutzer vorher
-     * manuell ausgeschaltet hat), passiert nichts. Ist es die letzte noch
-     * offene Zone, wird zusätzlich die Pumpe geordnet abgeschaltet.
+     * Schließt eine einzelne Zone passend zum AKTUELLEN Zustand. Wird vom
+     * "close_zone"-Warteschlangenschritt zur Ausführungszeit aufgerufen
+     * (manuelles Ausschalten und Ablauf der manuellen Dauer laufen beide
+     * über diesen Schritt). Ist die Zone inzwischen bereits geschlossen,
+     * passiert nichts. Ist es die letzte noch offene Zone, wird zusätzlich
+     * die Pumpe geordnet abgeschaltet (Pumpe aus -> Verfahrzeit -> Ventil zu).
      */
     private function autoCloseSteps(int $idx): array
     {
@@ -938,12 +952,22 @@ class Bewaesserungssteuerung extends IPSModule
      * "Alles stoppen" auch dann ein zuverlässiger Notausschalter, wenn
      * dieser Merker durch einen unterbrochenen Vorgang oder ein verlorenes
      * KNX-Telegramm einmal nicht mit der Realität übereinstimmt.
+     * Ist laut interner Buchführung gar nichts aktiv, wird eine verkürzte
+     * Sicherheitsvariante erzeugt (nur Pumpe-aus mit kurzer Wartezeit, kein
+     * irreführender "Stoppe..."-Status, keine volle Verfahrzeit-Pause) –
+     * relevant z. B. beim Sequenzstart aus dem Leerlauf.
      */
     private function shutdownSteps(): array
     {
-        $steps = [];
         $open = $this->openList();
 
+        if (count($open) === 0 && $this->ReadAttributeInteger('PumpOnSince') === 0) {
+            // Leerlauf: reines Sicherheits-Aus für die Pumpe (falls sie durch
+            // einen Status-Desync real doch laufen sollte), ohne lange Pause.
+            return [['cmd' => 'pump_off', 'post' => 2]];
+        }
+
+        $steps = [];
         $maxTravel = 7;
         foreach ($open as $i) {
             $maxTravel = max($maxTravel, $this->travel($i));
@@ -969,9 +993,10 @@ class Bewaesserungssteuerung extends IPSModule
     // ======================================================================
     /**
      * Schaltet ein oder alle Teilventile einer logischen Zone.
-     * $member = null -> alle Teilventile (Normalfall bei einfachen Zonen).
-     * $member = Index -> nur dieses eine Teilventil (für das strikt
-     * sequentielle Schalten von "Rasen": nie zwei Teilventile gleichzeitig).
+     * $member = null  -> alle Teilventile (Normalfall bei einfachen Zonen).
+     * $member = Index -> nur dieses eine Teilventil (für die "Rasen"-Kette,
+     * die ihre Teilventile einzeln über den Überlapp-Übergang schaltet,
+     * siehe lawnChainSteps()).
      */
     private function setValve(int $idx, bool $state, ?int $member = null): void
     {
@@ -1245,6 +1270,10 @@ class Bewaesserungssteuerung extends IPSModule
      */
     private function logicalZones(): array
     {
+        if ($this->logicalZonesCache !== null) {
+            return $this->logicalZonesCache;
+        }
+
         $physical = $this->physicalZones();
         $logical = [];
         $lawnDone = false;
@@ -1267,7 +1296,8 @@ class Bewaesserungssteuerung extends IPSModule
             $logical[] = $this->buildLogicalZone($z['Name'], [$z + ['idx' => $i]]);
         }
 
-        return array_values($logical);
+        $this->logicalZonesCache = array_values($logical);
+        return $this->logicalZonesCache;
     }
 
     private function buildLogicalZone(string $name, array $members): array
@@ -1439,11 +1469,20 @@ class Bewaesserungssteuerung extends IPSModule
             $this->SetValue('PumpStatus', $actual);
 
             $assumed = $this->ReadAttributeInteger('PumpOnSince') > 0;
-            if ($actual !== $assumed) {
-                $this->LogMessage(
-                    'Pumpen-Rückmeldung (' . ($actual ? 'an' : 'aus') . ') weicht vom intern angenommenen Zustand (' . ($assumed ? 'an' : 'aus') . ') ab',
-                    KL_WARNING
-                );
+            // Nur beim WECHSEL des Abweichungszustands loggen – sonst würde
+            // die Warnung während normaler kurzer Übergangsfenster (z. B.
+            // KNX-Rückmeldung trifft erst Sekunden nach dem Schaltbefehl
+            // ein) alle 10 Sekunden wiederholt.
+            $mismatch = $actual !== $assumed;
+            $lastLogged = $this->GetBuffer('PumpMismatch') === '1';
+            if ($mismatch !== $lastLogged) {
+                $this->SetBuffer('PumpMismatch', $mismatch ? '1' : '0');
+                if ($mismatch) {
+                    $this->LogMessage(
+                        'Pumpen-Rückmeldung (' . ($actual ? 'an' : 'aus') . ') weicht vom intern angenommenen Zustand (' . ($assumed ? 'an' : 'aus') . ') ab',
+                        KL_WARNING
+                    );
+                }
             }
         }
 
@@ -1535,9 +1574,11 @@ class Bewaesserungssteuerung extends IPSModule
      * Wird periodisch (aus CheckSchedule) aufgerufen: prüft für jede Zone mit
      * gesetzter manueller Ziel-Dauer, ob die tatsächliche Bewässerungszeit
      * (zoneRunSince, "Pumpe an + Ventil offen") die Ziel-Dauer erreicht hat,
-     * und schließt sie dann passend – unabhängig davon, ob andere Zonen
-     * noch offen sind. Toleranz: bis zu einem Prüfintervall (Standard 30 s),
-     * für Bewässerungsdauern im Minutenbereich unkritisch.
+     * und reiht dann einen "close_zone"-Schritt ein – die Entscheidung, ob
+     * die Pumpe mit ausgeschaltet werden muss (letzte offene Zone), fällt
+     * erst bei dessen Ausführung anhand des dann aktuellen Zustands.
+     * Toleranz: bis zu einem Prüfintervall (10 s), für Bewässerungsdauern
+     * im Minutenbereich unkritisch.
      */
     private function checkManualDeadlines(): void
     {
@@ -1556,7 +1597,7 @@ class Bewaesserungssteuerung extends IPSModule
             }
             $this->setZoneManualTarget($idx, 0);
             $this->LogMessage('Manuelle Dauer abgelaufen für Zone-Index ' . $idx . ' (seit ' . (time() - $since) . 's, Ziel war ' . $targetSeconds . 's) – schließe automatisch', KL_NOTIFY);
-            $this->enqueue($this->autoCloseSteps($idx));
+            $this->enqueue([['cmd' => 'close_zone', 'zone' => $idx]]);
         }
     }
 
