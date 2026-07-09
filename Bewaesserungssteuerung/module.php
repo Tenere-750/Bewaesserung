@@ -249,7 +249,7 @@ class Bewaesserungssteuerung extends IPSModule
         if ($categoryID <= 0) {
             return;
         }
-        $id = @IPS_GetObjectIDByIdent($categoryID, $ident);
+        $id = @IPS_GetObjectIDByIdent($ident, $categoryID);
 
         if (!$used) {
             if ($id !== false) {
@@ -281,7 +281,7 @@ class Bewaesserungssteuerung extends IPSModule
         if ($catID === false) {
             return 0;
         }
-        $id = @IPS_GetObjectIDByIdent($catID, $ident);
+        $id = @IPS_GetObjectIDByIdent($ident, $catID);
         return $id === false ? 0 : $id;
     }
 
