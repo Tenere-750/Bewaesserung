@@ -13,24 +13,26 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
   KNX-Geräteinstanz („Schalten", DPT 1.001), die im KNX-Konfigurator bzw.
   per ETS-Gruppenadress-Import bereits für die jeweilige Gruppenadresse
   angelegt wurde – im Instanz-Editor einfach per Objektbaum auswählen
-- **Rasen-Zusammenlegung (strikt sequentiell)**: zwei der physischen Zonen
-  (Standard: „Rasen links" und „Rasen rechts") lassen sich per Haken „Teil
-  von Rasen" zu einem einzigen logischen Kreis zusammenfassen. Im
-  WebFront und in den Sequenzen erscheint dafür nur noch ein
-  Schalter/Eintrag „Rasen" (Name über „Anzeigename der zusammengelegten
-  Rasen-Zone" änderbar). **Beide Motorkugelhähne dürfen dabei nie
-  gleichzeitig offen sein** – auch nicht kurz beim Wechsel: „Rasen links"
-  und „Rasen rechts" werden strikt nacheinander bewässert, jeweils mit
-  einem vollständigen Pumpenstopp dazwischen (Ventil auf → Verfahrzeit →
-  Pumpe an → Bewässern → Pumpe aus → Verfahrzeit → Ventil zu, dann exakt
-  dasselbe für die zweite Teilfläche). Der sonst übliche 10-Sekunden-
-  Überlapp beim Zonenwechsel gilt für „Rasen" **nicht** – hier hat
-  Sicherheit/Vorgabe Vorrang vor nahtlosem Übergang. Grenzt „Rasen" in
-  einer Sequenz an eine andere Zone, wird diese davor ganz regulär beendet
-  bzw. danach ganz regulär neu gestartet (ebenfalls ohne Überlapp an
-  dieser Stelle) – ein „Parallel"-Haken einer benachbarten Zeile wird für
-  „Rasen" ignoriert, da eine Kopplung dem Sequentiell-Gebot widerspräche.
-  Die Zyklenzähler bleiben trotzdem **pro physischem Kugelhahn** getrennt,
+- **Rasen-Zusammenlegung**: zwei der physischen Zonen (Standard: „Rasen
+  links" und „Rasen rechts") lassen sich per Haken „Teil von Rasen" zu
+  einem einzigen logischen Kreis zusammenfassen. Im WebFront und in den
+  Sequenzen erscheint dafür nur noch ein Schalter/Eintrag „Rasen" (Name
+  über „Anzeigename der zusammengelegten Rasen-Zone" änderbar). Schema:
+  **Ventil 1 auf → Verfahrzeit warten → Pumpe an → Ventil 2 auf →
+  Überlapp warten → Ventil 1 zu → Pumpe aus → Verfahrzeit warten →
+  Ventil 2 zu** — entspricht exakt dem normalen Sequenz-Übergang
+  zwischen zwei unterschiedlichen Zonen, nur innerhalb einer einzigen
+  logischen Zone angewendet: die beiden Teilventile sind während der
+  konfigurierten Überlapp-Zeit kurz gemeinsam offen, davor und danach
+  läuft immer nur ein Teilventil. „Rasen" läuft dabei immer exklusiv,
+  ohne dass gleichzeitig eine andere Zone geöffnet ist (der eigene
+  Überlapp beansprucht bereits bis zu 2 Ventile gleichzeitig). Grenzt
+  „Rasen" in einer Sequenz an eine andere Zone, wird diese davor ganz
+  regulär beendet bzw. danach ganz regulär neu gestartet – ein
+  „Parallel"-Haken einer benachbarten Zeile wird für „Rasen" ignoriert,
+  da eine Kopplung mit einer DRITTEN Zone die maximale Anzahl gleichzeitig
+  offener Ventile überschreiten würde. Die Zyklenzähler bleiben trotzdem
+  **pro physischem Kugelhahn** getrennt,
   weil beide Ventile unabhängig voneinander verschleißen.
 - **Optionaler Bodenfeuchtesensor je physischer Zone**: Haken „Bodenfeuchte-
   sensor nutzen" aktivieren, vorhandene Sensor-Variable auswählen und
@@ -41,6 +43,9 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
   gelegten Rasen-Zone genügt es, wenn **eine** der beiden Teilflächen
   trocken meldet, dann wird gegossen (siehe „Sensor-Logik im Detail" unten).
 - Master-Schalter
+- Optionale Anzeige von **Wasserdruck** und **Durchfluss** im WebFront
+  (zwischen „Status" und „Startzeit Sequenz 1"), gespeist aus je einer
+  frei wählbaren, bereits vorhandenen Sensor-Variable
 - Manuelle Steuerung jeder (logischen) Zone im WebFront, **mit direkt im
   WebFront einstellbarer Bewässerungsdauer je Kreis** – die Zone schaltet
   nach Ablauf automatisch wieder ab, statt unbegrenzt offen zu bleiben
@@ -66,8 +71,9 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
 - **Laufzeit je Kreis** (heute in Minuten, gesamt in Stunden): gezählt wird
   die Zeit, in der die Pumpe läuft **und** die jeweilige Zone offen ist –
   also die tatsächliche Bewässerungszeit, nicht die reine Ventil-Offen-Zeit
-  inklusive Verfahrzeiten. Bei „Rasen" wird jede Teilfläche einzeln
-  mitgezählt, die Pumpenpause zwischen den beiden Seiten zählt nicht mit.
+  inklusive Verfahrzeiten. Bei „Rasen" wird die Laufzeit als Ganzes für
+  den zusammengelegten Kreis erfasst (inklusive der kurzen Überlapp-Zeit
+  beim Wechsel zwischen den Teilflächen).
 - Zyklenzähler pro Motorkugelhahn (jedes Öffnen = 1 Zyklus)
 
 Alle Wartezeiten laufen **nicht blockierend** über eine Timer-gesteuerte
@@ -103,9 +109,14 @@ Schritt-Warteschlange – kein `IPS_Sleep`, keine hängenden PHP-Threads.
 
 1. **Pumpe – KNX-Instanz**: die zuvor angelegte „Schalten"-Geräteinstanz
    (DPT1) der Pumpen-Gruppenadresse im Objektbaum auswählen
-2. **Anzeigename der zusammengelegten Rasen-Zone**: Standard „Rasen",
+2. **Wasserdrucksensor / Durchflusssensor** (beide optional): vorhandene
+   IP-Symcon-Variable auswählen, die den jeweiligen Messwert führt (z. B.
+   eine KNX-DPT9-Geräteinstanz mit eigener Statusvariable). Der Wert wird
+   alle 10 Sekunden in die WebFront-Anzeigen „Wasserdruck"/„Durchfluss"
+   gespiegelt. Ohne Auswahl bleiben beide Anzeigen bei 0.
+3. **Anzeigename der zusammengelegten Rasen-Zone**: Standard „Rasen",
    nach Wunsch änderbar
-3. **Physische Beregnungszonen**: pro Zeile
+4. **Physische Beregnungszonen**: pro Zeile
    - **Name** — frei wählbar
    - **Motorkugelhahn – KNX-Instanz** — die „Schalten"-Geräteinstanz (DPT1)
      dieses Ventils auswählen
@@ -130,7 +141,7 @@ Schritt-Warteschlange – kein `IPS_Sleep`, keine hängenden PHP-Threads.
      resistiven/Rohwert-Sensoren); Standard ist „hoher Wert = feucht"
    - Die Zeilenreihenfolge bestimmt die spätere Zonennummer (nach der
      Rasen-Zusammenlegung)
-4. **Sequenz 1 / Sequenz 2**: pro Zeile logische Zone, Dauer, Intervall
+5. **Sequenz 1 / Sequenz 2**: pro Zeile logische Zone, Dauer, Intervall
    (Tage), „Parallel zur vorherigen Zone" und Aktiv-Haken. Die
    Zeilenreihenfolge ist die Bewässerungsreihenfolge. Die Zonen-Auswahl
    zeigt bereits die logischen Kreise nach der Rasen-Zusammenlegung.
@@ -143,7 +154,7 @@ Schritt-Warteschlange – kein `IPS_Sleep`, keine hängenden PHP-Threads.
    **je Teilfläche** (Rasen links UND Rasen rechts laufen jeweils so
    lange) – die tatsächliche Gesamtlaufzeit ist also etwa doppelt so lang
    plus Verfahrzeiten. Der „Parallel"-Haken hat für „Rasen" keine Wirkung.
-5. Übernehmen. Die WebFront-Variablen werden automatisch angelegt.
+6. Übernehmen. Die WebFront-Variablen werden automatisch angelegt.
 
 ## Bedienung im WebFront
 
@@ -159,10 +170,12 @@ getrennt.
 | Master-Schalter | Aus = sofortiger geordneter Stopp, Automatik gesperrt |
 | Automatik-Sequenz | Buttons: Stopp / Sequenz 1 / Sequenz 2 (manueller Start) |
 | Status | Klartext, was gerade passiert (inkl. wegen Feuchte übersprungener Zonen) |
+| Wasserdruck | reine Anzeige (bar); zeigt den Wert der unter „Wasserdrucksensor" verknüpften Variable, alle 10 s aktualisiert |
+| Durchfluss | reine Anzeige (l/min); zeigt den Wert der unter „Durchflusssensor" verknüpften Variable, alle 10 s aktualisiert |
 | Startzeit Sequenz 1/2 | Uhrzeit-Eingabe für den Automatikstart |
 | Automatik Sequenz 1/2 | Automatikstart einzeln aktivieren/deaktivieren |
 | „…" – manuelle Dauer | pro Kreis direkt im WebFront einstellbar (Minuten); bestimmt, wie lange die Zone beim nächsten manuellen Einschalten bewässert wird. Voreingestellt mit der Standard-Bewässerungsdauer aus der Zonenkonfiguration, hier aber jederzeit ohne Formular anpassbar |
-| Zonen-Schalter | manuelle Bewässerung: öffnet die Zone und schließt sie **automatisch** nach Ablauf der oben eingestellten Dauer wieder (Pumpe wird dabei geordnet mitgeschaltet). Vorzeitiges Ausschalten bricht sauber ab. „Rasen" arbeitet dabei die komplette Kette ab (Teilfläche 1, Pumpenpause, Teilfläche 2, jeweils für die eingestellte Dauer je Teilfläche) und schaltet sich danach selbst wieder aus |
+| Zonen-Schalter | manuelle Bewässerung: öffnet die Zone und schließt sie **automatisch** nach Ablauf der oben eingestellten Dauer wieder (Pumpe wird dabei geordnet mitgeschaltet). Vorzeitiges Ausschalten bricht sauber ab. „Rasen" arbeitet dabei die komplette Kette ab (Teilfläche 1 → kurzer Überlapp → Teilfläche 2, jeweils für die eingestellte Dauer je Teilfläche) und schaltet sich danach selbst wieder aus |
 
 ### Statistik (Unterkategorie)
 
@@ -202,13 +215,15 @@ getrennt.
   alte geschlossen und das zweite neue geöffnet — so sind nie mehr als
   2 Ventile gleichzeitig offen und die Pumpe hat immer mindestens ein
   offenes Ventil.
-- **„Rasen" ist exklusiv**: Weil die beiden Teilflächen nie gleichzeitig mit
-  irgendeiner anderen Zone laufen dürfen, lässt sich „Rasen" manuell nur
-  starten, wenn gerade **keine** andere Zone offen ist – und solange
-  „Rasen" läuft, lässt sich keine andere Zone manuell zusätzlich öffnen.
-  Beide Fälle quittiert das Modul mit einer klaren Fehlermeldung im
-  WebFront/Skript statt stillschweigend etwas Falsches zu tun. In der
-  Automatik-Sequenz wird das automatisch berücksichtigt (siehe oben).
+- **„Rasen" ist exklusiv**: Der eigene Überlapp-Übergang von „Rasen"
+  beansprucht kurzzeitig bis zu 2 gleichzeitig offene Ventile – deshalb
+  lässt sich „Rasen" manuell nur starten, wenn gerade **keine** andere
+  Zone offen ist, und solange „Rasen" läuft, lässt sich keine andere Zone
+  manuell zusätzlich öffnen (das würde die maximale Anzahl gleichzeitig
+  offener Ventile überschreiten). Beide Fälle quittiert das Modul mit
+  einer klaren Fehlermeldung im WebFront/Skript statt stillschweigend
+  etwas Falsches zu tun. In der Automatik-Sequenz wird das automatisch
+  berücksichtigt (siehe oben).
 - **Manuell + Automatik**: Startet eine Sequenz, während manuell bewässert
   wird, wird zuerst geordnet gestoppt (Pumpe aus → Verfahrzeit → Ventile
   zu) und dann die Sequenz gefahren. Während einer laufenden Sequenz ist
