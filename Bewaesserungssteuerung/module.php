@@ -25,6 +25,10 @@ declare(strict_types=1);
  * - Auch mit „Parallel"-Kopplung bleiben in der Sequenz max. 2 Ventile gleichzeitig offen
  * - Bewässerungsintervall pro logischer Zone und Sequenz (jeden Tag, jeden 2. Tag, ...)
  * - Pumpenlaufzeit (heute/gesamt) und Zyklenzähler pro Motorkugelhahn
+ * - Mehrere manuell geöffnete Zonen laufen mit unabhängigen Bewässerungs-
+ *   Timern (checkManualDeadlines): die Pumpe wird garantiert erst
+ *   ausgeschaltet, nachdem/bevor die jeweils LETZTE offene Zone schließt,
+ *   auch wenn mehrere Zonen zu unterschiedlichen Zeiten fertig werden.
  *
  * Die zeitlichen Abläufe werden nicht blockierend (kein IPS_Sleep) über eine
  * Timer-gesteuerte Schritt-Warteschlange (Queue) abgearbeitet.
@@ -72,6 +76,7 @@ class Bewaesserungssteuerung extends IPSModule
         $this->RegisterAttributeString('ZoneRunSince', '{}');   // je logischer Zone: Unix-Zeit, seit wann sie aktiv bewässert (Pumpe an + Ventil offen)
         $this->RegisterAttributeString('ZoneDayAccum', '{}');   // je logischer Zone: Laufzeit heute in Sekunden
         $this->RegisterAttributeString('ZoneTotalAccum', '{}'); // je logischer Zone: Laufzeit gesamt in Sekunden
+        $this->RegisterAttributeString('ZoneManualTarget', '{}'); // je logischer Zone: gewünschte manuelle Bewässerungsdauer in Sekunden (0/fehlt = kein Auto-Timer aktiv)
 
         // ------------------------------------------------------------------
         // Variablenprofile
@@ -159,40 +164,85 @@ class Bewaesserungssteuerung extends IPSModule
         }
 
         // ------------------------------------------------------------------
-        // Zyklenzähler pro physischem Motorkugelhahn
+        // Statistik-Kategorie (separiert Laufzeiten/Zyklen von der Steuerung)
+        // ------------------------------------------------------------------
+        $statsCategoryID = $this->ensureCategory('StatsCategory', 'Statistik', 900);
+
+        // ------------------------------------------------------------------
+        // Zyklenzähler pro physischem Motorkugelhahn (-> Statistik)
         // ------------------------------------------------------------------
         $physical = $this->physicalZones();
         for ($i = 0; $i < self::MAX_ZONES; $i++) {
             $used = isset($physical[$i]);
             $name = $used ? $physical[$i]['Name'] : '';
             $this->MaintainVariable('CyclesP' . $i, $name . ' – Zyklen Kugelhahn', VARIABLETYPE_INTEGER, 'BWS.Cycles', 200 + $i, $used);
+            if ($used) {
+                IPS_SetParent($this->GetIDForIdent('CyclesP' . $i), $statsCategoryID);
+            }
         }
 
         // ------------------------------------------------------------------
-        // Manuelle Schalter + Laufzeitanzeige pro logischer Zone (nach Rasen-Zusammenlegung)
+        // Manuelle Schalter + Dauer pro logischer Zone (Steuerung, bleibt bei
+        // der Instanz) sowie Laufzeitanzeige je Zone (-> Statistik)
         // ------------------------------------------------------------------
         $logical = $this->logicalZones();
         for ($i = 0; $i < self::MAX_ZONES; $i++) {
             $used = isset($logical[$i]);
             $name = $used ? $logical[$i]['name'] : '';
+
             $this->MaintainVariable('ManualZ' . $i, $name, VARIABLETYPE_BOOLEAN, '~Switch', 100 + $i, $used);
             if ($used) {
                 $this->EnableAction('ManualZ' . $i);
             }
+
+            $newDur = $used && @$this->GetIDForIdent('ManualDurationZ' . $i) === false;
+            $this->MaintainVariable('ManualDurationZ' . $i, $name . ' – manuelle Dauer', VARIABLETYPE_INTEGER, 'BWS.Minutes', 150 + $i, $used);
+            if ($used) {
+                $this->EnableAction('ManualDurationZ' . $i);
+                if ($newDur) {
+                    $this->SetValue('ManualDurationZ' . $i, $logical[$i]['defaultDuration']);
+                }
+            }
+
             $this->MaintainVariable('ZRunDay' . $i, $name . ' – Laufzeit heute', VARIABLETYPE_INTEGER, 'BWS.Minutes', 400 + $i, $used);
             $this->MaintainVariable('ZRunTotal' . $i, $name . ' – Laufzeit gesamt', VARIABLETYPE_FLOAT, 'BWS.Hours', 500 + $i, $used);
+            if ($used) {
+                IPS_SetParent($this->GetIDForIdent('ZRunDay' . $i), $statsCategoryID);
+                IPS_SetParent($this->GetIDForIdent('ZRunTotal' . $i), $statsCategoryID);
+            }
         }
 
         // ------------------------------------------------------------------
-        // Laufzeitanzeige (Pumpe gesamt)
+        // Laufzeitanzeige (Pumpe gesamt) (-> Statistik)
         // ------------------------------------------------------------------
         $this->RegisterVariableInteger('RuntimeDay', 'Pumpenlaufzeit heute', 'BWS.Minutes', 300);
         $this->RegisterVariableFloat('RuntimeTotal', 'Pumpenlaufzeit gesamt', 'BWS.Hours', 310);
+        IPS_SetParent($this->GetIDForIdent('RuntimeDay'), $statsCategoryID);
+        IPS_SetParent($this->GetIDForIdent('RuntimeTotal'), $statsCategoryID);
 
-        // Zeitplan-Prüfung alle 30 Sekunden
-        $this->SetTimerInterval('Schedule', 30000);
+        // Zeitplan-Prüfung alle 10 Sekunden (auch Grundlage für die
+        // Auto-Abschaltung manuell gestarteter Zonen, s. checkManualDeadlines)
+        $this->SetTimerInterval('Schedule', 10000);
         $this->updateRuntimeDisplay();
         $this->updateAllZoneRuntimeDisplays();
+    }
+
+    /**
+     * Legt bei Bedarf eine Unterkategorie unterhalb der Instanz an (bzw.
+     * benennt/positioniert eine bereits vorhandene neu) und gibt ihre
+     * Objekt-ID zurück.
+     */
+    private function ensureCategory(string $ident, string $name, int $position): int
+    {
+        $id = @$this->GetIDForIdent($ident);
+        if ($id === false) {
+            $id = IPS_CreateCategory();
+            IPS_SetParent($id, $this->InstanceID);
+            IPS_SetIdent($id, $ident);
+        }
+        IPS_SetName($id, $name);
+        IPS_SetPosition($id, $position);
+        return $id;
     }
 
     // ======================================================================
@@ -228,6 +278,10 @@ class Bewaesserungssteuerung extends IPSModule
 
             case str_starts_with($Ident, 'ManualZ'):
                 $this->manualZone((int)substr($Ident, 7), (bool)$Value);
+                break;
+
+            case str_starts_with($Ident, 'ManualDurationZ'):
+                $this->SetValue($Ident, max(1, (int)$Value));
                 break;
 
             default:
@@ -400,6 +454,7 @@ class Bewaesserungssteuerung extends IPSModule
         $steps[] = ['cmd' => 'seq_end'];
 
         $this->clearQueue();
+        $this->WriteAttributeString('ZoneManualTarget', '{}');
         $this->SetValue('SeqControl', $Sequence);
         $note = count($skippedMoist) > 0 ? (' (übersprungen wegen Feuchte: ' . implode(', ', $skippedMoist) . ')') : '';
         $this->LogMessage('Sequenz ' . $Sequence . ' gestartet (' . count($due) . ' Zonen)' . $note, KL_NOTIFY);
@@ -412,6 +467,7 @@ class Bewaesserungssteuerung extends IPSModule
     public function StopAll(): void
     {
         $this->clearQueue();
+        $this->WriteAttributeString('ZoneManualTarget', '{}');
         $this->SetValue('SeqControl', 0);
         $steps = $this->shutdownSteps();
         $steps[] = ['cmd' => 'status', 'param' => 'Bereit'];
@@ -478,6 +534,7 @@ class Bewaesserungssteuerung extends IPSModule
         }
         $this->updateRuntimeDisplay();
         $this->updateAllZoneRuntimeDisplays();
+        $this->checkManualDeadlines();
 
         // --- Automatikstart -----------------------------------------------
         if (!$this->GetValue('Active')) {
@@ -527,8 +584,11 @@ class Bewaesserungssteuerung extends IPSModule
             $queue = json_decode($this->GetBuffer('Queue'), true) ?: [];
             while (count($queue) > 0) {
                 $step = array_shift($queue);
+                $extra = $this->executeStep($step);
+                if (count($extra) > 0) {
+                    $queue = array_merge($extra, $queue);
+                }
                 $this->SetBuffer('Queue', json_encode($queue));
-                $this->executeStep($step);
 
                 $post = (int)($step['post'] ?? 0);
                 if ($post > 0) {
@@ -582,23 +642,43 @@ class Bewaesserungssteuerung extends IPSModule
                 throw new Exception('Maximal ' . $this->ReadPropertyInteger('MaxParallel') . ' Zonen gleichzeitig erlaubt.');
             }
 
+            // Bewässerungsdauer: das im WebFront direkt editierbare Dauer-Feld
+            // dieser Zone (voreingestellt mit der Standard-Bewässerungsdauer
+            // aus der Konfiguration, dort aber jederzeit anpassbar).
+            $durSeconds = max(1, $this->GetValue('ManualDurationZ' . $idx)) * 60;
+
             if ($isLawn) {
                 // Eigene, in sich geschlossene Kette: Teil 1 komplett fertig,
                 // Pumpe dazwischen aus, dann Teil 2 – nie gleichzeitig offen.
-                $durSeconds = max(1, $zones[$idx]['defaultDuration']) * 60;
+                // Die Dauer gilt je Teilfläche. "Rasen" ist exklusiv (siehe
+                // Prüfung oben), daher ist diese Kette immer die einzige
+                // Aktivität und darf komplett seriell in der Warteschlange
+                // stehen, ohne andere Zonen zu blockieren.
                 $this->enqueue($this->lawnChainSteps($zones[$idx], $idx, $durSeconds));
                 return;
             }
 
+            // WICHTIG: Die Bewässerungsdauer wird NICHT als Wartezeit in die
+            // (instanzweit gemeinsame) serielle Warteschlange gelegt – sonst
+            // würde eine zweite, während dieser Dauer manuell geöffnete Zone
+            // erst nach Ablauf der ersten Wartezeit tatsächlich schalten
+            // (die Warteschlange verarbeitet Schritte strikt nacheinander).
+            // Stattdessen wird nur die kurze Schalt-Choreografie (Ventil auf
+            // -> Verfahrzeit -> Pumpe an) seriell eingereiht, und die Dauer
+            // separat als Ziel-Zeitpunkt hinterlegt. Ein periodischer Check
+            // (CheckSchedule -> checkManualDeadlines) schließt die Zone dann
+            // unabhängig von anderen offenen Zonen zum richtigen Zeitpunkt.
+            $this->setZoneManualTarget($idx, $durSeconds);
+
             $steps = [];
             if (!$pumpOn) {
-                // Erste Zone: Ventil(e) auf -> Verfahrzeit -> Pumpe an
+                // Erste Zone: Ventil auf -> Verfahrzeit -> Pumpe an
                 $steps[] = ['cmd' => 'status', 'param' => 'Manuell: öffne ' . $name];
                 $steps[] = ['cmd' => 'valve_on', 'zone' => $idx, 'post' => $this->travel($idx)];
                 $steps[] = ['cmd' => 'pump_on'];
                 $steps[] = ['cmd' => 'status', 'param' => 'Manuell: ' . $name . ' aktiv'];
             } else {
-                // Pumpe läuft bereits (andere Zone offen): Ventil(e) einfach öffnen
+                // Pumpe läuft bereits (andere Zone offen): Ventil einfach öffnen
                 $steps[] = ['cmd' => 'valve_on', 'zone' => $idx];
                 $steps[] = ['cmd' => 'status', 'param' => 'Manuell: ' . $name . ' zusätzlich aktiv'];
             }
@@ -609,16 +689,28 @@ class Bewaesserungssteuerung extends IPSModule
                 return;
             }
 
+            // Anstehenden Auto-Timer für diese Zone verwerfen (vorzeitiger
+            // manueller Abbruch).
+            $this->setZoneManualTarget($idx, 0);
+
             if ($isLawn) {
-                // Laufende Kette abbrechen: ausstehende Schritte verwerfen und
-                // sauber schließen (schließt automatisch nur die aktuell
-                // tatsächlich offenen Teilventile, s. shutdownSteps()).
+                // "Rasen" läuft exklusiv (siehe Prüfung beim Einschalten) –
+                // die Warteschlange kann in diesem Moment daher nur noch
+                // Schritte der eigenen, noch laufenden Kette enthalten und
+                // darf komplett verworfen werden, um sie sofort abzubrechen.
                 $this->clearQueue();
             }
+            // Bei einfachen Zonen wird die Warteschlange bewusst NICHT
+            // pauschal geleert: sie kann die kurze Schalt-Choreografie einer
+            // ANDEREN, gerade erst geöffneten Zone enthalten. Falls diese
+            // Zone selbst noch mitten in ihrer eigenen kurzen Öffnungs-
+            // Choreografie steckt, werden die folgenden Schließ-Schritte
+            // einfach angehängt und laufen danach korrekt durch – maximal
+            // um eine Verfahrzeit verzögert, nie in falscher Reihenfolge.
 
             $steps = [];
             if ($pumpOn && count($open) === 1) {
-                // Letzte offene Zone: Pumpe aus -> Verfahrzeit -> Ventil(e) zu
+                // Letzte offene Zone: Pumpe aus -> Verfahrzeit -> Ventil zu
                 $steps[] = ['cmd' => 'status', 'param' => 'Manuell: beende ' . $name];
                 $steps[] = ['cmd' => 'pump_off', 'post' => $this->travel($idx)];
                 $steps[] = ['cmd' => 'valve_off', 'zone' => $idx];
@@ -658,7 +750,14 @@ class Bewaesserungssteuerung extends IPSModule
         }
     }
 
-    private function executeStep(array $step): void
+    /**
+     * Führt einen Warteschlangen-Schritt aus. Der Rückgabewert enthält
+     * optional zusätzliche Schritte, die sofort VOR den bereits wartenden
+     * Schritten eingefügt werden (aktuell ungenutzt, aber als Erweiterungs-
+     * punkt beibehalten; die manuelle Auto-Abschaltung läuft inzwischen über
+     * checkManualDeadlines(), unabhängig von dieser seriellen Warteschlange).
+     */
+    private function executeStep(array $step): array
     {
         switch ($step['cmd'] ?? '') {
             case 'valve_on':
@@ -687,6 +786,35 @@ class Bewaesserungssteuerung extends IPSModule
                 $this->LogMessage('Sequenz beendet', KL_NOTIFY);
                 break;
         }
+        return [];
+    }
+
+    /**
+     * Schließt eine einzelne Zone passend zum aktuellen Zustand (genutzt,
+     * wenn die manuelle Bewässerungsdauer einer Zone abgelaufen ist). Ist die
+     * Zone inzwischen bereits geschlossen (z. B. weil der Nutzer vorher
+     * manuell ausgeschaltet hat), passiert nichts. Ist es die letzte noch
+     * offene Zone, wird zusätzlich die Pumpe geordnet abgeschaltet.
+     */
+    private function autoCloseSteps(int $idx): array
+    {
+        $open = $this->openList();
+        if (!in_array($idx, $open, true)) {
+            return [];
+        }
+        $zones = $this->logicalZones();
+        $name = $zones[$idx]['name'] ?? ('Zone ' . $idx);
+        $pumpOn = $this->ReadAttributeInteger('PumpOnSince') > 0;
+
+        if ($pumpOn && count($open) === 1) {
+            return [
+                ['cmd' => 'status', 'param' => 'Manuell: beende ' . $name],
+                ['cmd' => 'pump_off', 'post' => $this->travel($idx)],
+                ['cmd' => 'valve_off', 'zone' => $idx],
+                ['cmd' => 'status', 'param' => 'Bereit'],
+            ];
+        }
+        return [['cmd' => 'valve_off', 'zone' => $idx]];
     }
 
     /**
@@ -1132,6 +1260,57 @@ class Bewaesserungssteuerung extends IPSModule
         }
     }
 
+    // ------------------------------------------------------------------
+    // Manuelle Bewässerungsdauer je Zone: unabhängig von der seriellen
+    // Schalt-Warteschlange verwaltet, damit mehrere manuell geöffnete Zonen
+    // ihre jeweils eigene Dauer parallel abwarten können (siehe manualZone()).
+    // ------------------------------------------------------------------
+
+    private function zoneManualTarget(int $idx): int
+    {
+        $all = json_decode($this->ReadAttributeString('ZoneManualTarget'), true) ?: [];
+        return (int)($all[(string)$idx] ?? 0);
+    }
+
+    private function setZoneManualTarget(int $idx, int $seconds): void
+    {
+        $all = json_decode($this->ReadAttributeString('ZoneManualTarget'), true) ?: [];
+        if ($seconds > 0) {
+            $all[(string)$idx] = $seconds;
+        } else {
+            unset($all[(string)$idx]);
+        }
+        $this->WriteAttributeString('ZoneManualTarget', json_encode($all));
+    }
+
+    /**
+     * Wird periodisch (aus CheckSchedule) aufgerufen: prüft für jede Zone mit
+     * gesetzter manueller Ziel-Dauer, ob die tatsächliche Bewässerungszeit
+     * (zoneRunSince, "Pumpe an + Ventil offen") die Ziel-Dauer erreicht hat,
+     * und schließt sie dann passend – unabhängig davon, ob andere Zonen
+     * noch offen sind. Toleranz: bis zu einem Prüfintervall (Standard 30 s),
+     * für Bewässerungsdauern im Minutenbereich unkritisch.
+     */
+    private function checkManualDeadlines(): void
+    {
+        $targets = json_decode($this->ReadAttributeString('ZoneManualTarget'), true) ?: [];
+        if (count($targets) === 0) {
+            return;
+        }
+        foreach ($targets as $idxStr => $targetSeconds) {
+            $idx = (int)$idxStr;
+            $since = $this->zoneRunSince($idx);
+            if ($since === 0) {
+                continue; // wässert gerade noch nicht aktiv (z. B. noch in der Öffnungs-Verfahrzeit)
+            }
+            if (time() - $since < (int)$targetSeconds) {
+                continue; // noch nicht fällig
+            }
+            $this->setZoneManualTarget($idx, 0);
+            $this->enqueue($this->autoCloseSteps($idx));
+        }
+    }
+
     private function sem(): string
     {
         return 'BWS_' . $this->InstanceID;
@@ -1170,9 +1349,17 @@ class Bewaesserungssteuerung extends IPSModule
             [
                 'caption' => 'Intervall',
                 'name'    => 'Interval',
-                'width'   => '130px',
+                'width'   => '160px',
                 'add'     => 1,
-                'edit'    => ['type' => 'NumberSpinner', 'suffix' => ' Tag(e)', 'minimum' => 1]
+                'edit'    => ['type' => 'Select', 'options' => [
+                    ['caption' => 'täglich', 'value' => 1],
+                    ['caption' => 'alle 2 Tage', 'value' => 2],
+                    ['caption' => 'alle 3 Tage', 'value' => 3],
+                    ['caption' => 'alle 4 Tage', 'value' => 4],
+                    ['caption' => 'alle 5 Tage', 'value' => 5],
+                    ['caption' => 'alle 6 Tage', 'value' => 6],
+                    ['caption' => 'wöchentlich (alle 7 Tage)', 'value' => 7],
+                ]]
             ],
             [
                 'caption' => 'Parallel zur vorherigen Zone',
