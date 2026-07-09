@@ -12,9 +12,13 @@ declare(strict_types=1);
  *   KNX-Konfigurator/ETS-Import angelegte "Schalten"-Geräteinstanz (DPT1)
  *   der jeweiligen Gruppenadresse.
  * - Zwei der physischen Zonen können zu einer logischen Zone „Rasen"
- *   zusammengelegt werden: beide Ventile werden dann immer gemeinsam
- *   geschaltet und im WebFront/in den Sequenzen als EIN Kreis geführt.
- *   Die Zyklenzähler bleiben pro physischem Kugelhahn getrennt.
+ *   zusammengelegt werden und im WebFront/in den Sequenzen als EIN Kreis
+ *   geführt werden. Schema: Ventil 1 auf -> Verfahrzeit warten -> Pumpe an
+ *   -> Ventil 2 auf -> Überlapp warten -> Ventil 1 zu -> Pumpe aus ->
+ *   Verfahrzeit warten -> Ventil 2 zu (entspricht dem normalen
+ *   Sequenz-Übergang, nur innerhalb einer logischen Zone). Läuft immer
+ *   exklusiv, ohne dass gleichzeitig eine andere Zone geöffnet ist. Die
+ *   Zyklenzähler bleiben pro physischem Kugelhahn getrennt.
  * - Optionaler Bodenfeuchtesensor je physischer Zone mit Schwellenwert:
  *   ist der Boden feucht genug, wird die Zone in der Automatik übersprungen
  *   (manuelle Bewässerung ignoriert den Sensor bewusst).
@@ -399,9 +403,11 @@ class Bewaesserungssteuerung extends IPSModule
 
         // Gruppen bilden: Zonen mit "Parallel"-Haken laufen zusammen mit der
         // vorherigen fälligen Zone. Gruppengröße ist hart auf MaxParallel
-        // (höchstens 2) begrenzt. Strikt-sequentielle Zonen (z. B. "Rasen")
-        // dürfen NIE mit einer anderen Zone gepaart werden – sie bilden immer
-        // eine eigene Gruppe und laufen komplett in sich abgeschlossen ab.
+        // (höchstens 2) begrenzt. Zusammengelegte Zonen (z. B. "Rasen")
+        // dürfen NIE mit einer anderen Zone gepaart werden – ihr eigener
+        // interner Übergang benötigt bereits bis zu 2 gleichzeitig offene
+        // Ventile, sie bilden daher immer eine eigene, in sich
+        // abgeschlossene Gruppe.
         $groupLimit = min(2, max(1, $this->ReadPropertyInteger('MaxParallel')));
         $groups = [];
         foreach ($due as $z) {
@@ -428,10 +434,12 @@ class Bewaesserungssteuerung extends IPSModule
 
         foreach ($groups as $k => $g) {
             if ($isLawnGroup($g)) {
-                // Strikt-sequentielle Zone (z. B. "Rasen"): läuft immer komplett
-                // in sich abgeschlossen ab (eigene Pumpen-Zyklen je Teilventil,
-                // nie Überlapp mit sich selbst). Falls davor noch eine andere
-                // Gruppe offen ist, wird diese zuerst normal beendet.
+                // Zusammengelegte Zone (z. B. "Rasen"): läuft in sich
+                // abgeschlossen mit eigenem Überlapp-Übergang zwischen den
+                // Teilventilen (siehe lawnChainSteps()). Falls davor noch
+                // eine andere Gruppe offen ist, wird diese zuerst normal
+                // beendet, da "Rasen" nicht mit einer anderen Zone
+                // gemeinsam anlaufen darf.
                 if ($k > 0) {
                     $prev = $groups[$k - 1];
                     $steps[] = ['cmd' => 'status', 'param' => 'Beende ' . $groupName($prev) . ' vor ' . $zones[$g[0]['idx']]['name']];
@@ -670,14 +678,16 @@ class Bewaesserungssteuerung extends IPSModule
             if (in_array($idx, $open, true)) {
                 return;
             }
-            // Strikt-sequentielle Zonen (z. B. "Rasen") benötigen den
-            // Pumpenkreis exklusiv, weil ihre Teilventile nie gleichzeitig mit
-            // irgendeiner anderen Zone offen sein dürfen.
+            // Zusammengelegte Zonen (z. B. "Rasen") benötigen den Pumpenkreis
+            // exklusiv: ihr interner Übergang zwischen den Teilventilen nutzt
+            // bereits einen kurzen Überlapp (2 Ventile gleichzeitig offen),
+            // eine zusätzliche andere Zone würde die maximale Anzahl
+            // gleichzeitig offener Ventile überschreiten.
             if ($isLawn && count($open) > 0) {
-                throw new Exception($name . ' läuft strikt nacheinander und benötigt den Pumpenkreis exklusiv – bitte zuerst alle anderen offenen Zonen schließen.');
+                throw new Exception($name . ' benötigt den Pumpenkreis exklusiv – bitte zuerst alle anderen offenen Zonen schließen.');
             }
             if (!$isLawn && $this->anyOpenIsSequential()) {
-                throw new Exception('Aktuell läuft eine strikt nacheinander arbeitende Zone (z. B. Rasen) – bitte warten, bis diese fertig ist.');
+                throw new Exception('Aktuell läuft eine zusammengelegte Zone (z. B. Rasen) – bitte warten, bis diese fertig ist.');
             }
             if (count($open) >= max(1, $this->ReadPropertyInteger('MaxParallel'))) {
                 throw new Exception('Maximal ' . $this->ReadPropertyInteger('MaxParallel') . ' Zonen gleichzeitig erlaubt.');
@@ -689,8 +699,8 @@ class Bewaesserungssteuerung extends IPSModule
             $durSeconds = max(1, $this->GetValue('ManualDurationZ' . $idx)) * 60;
 
             if ($isLawn) {
-                // Eigene, in sich geschlossene Kette: Teil 1 komplett fertig,
-                // Pumpe dazwischen aus, dann Teil 2 – nie gleichzeitig offen.
+                // Eigene, in sich geschlossene Kette mit kurzem Überlapp beim
+                // Wechsel zwischen den Teilventilen (siehe lawnChainSteps()).
                 // Die Dauer gilt je Teilfläche. "Rasen" ist exklusiv (siehe
                 // Prüfung oben), daher ist diese Kette immer die einzige
                 // Aktivität und darf komplett seriell in der Warteschlange
@@ -991,29 +1001,51 @@ class Bewaesserungssteuerung extends IPSModule
     }
 
     /**
-     * Baut die in sich geschlossene Schrittkette für eine strikt-sequentielle
-     * Zone (z. B. "Rasen"): jedes Teilventil öffnet -> Verfahrzeit -> Pumpe an
-     * -> Dauer -> Pumpe aus -> Verfahrzeit -> Teilventil zu, danach exakt das
-     * Gleiche für das nächste Teilventil. Zwischen den Teilventilen liegt also
-     * immer eine vollständige Pumpenpause – die beiden laufen nie gleichzeitig.
+     * Baut die in sich geschlossene Schrittkette für eine zusammengelegte
+     * Zone (z. B. "Rasen") nach dem Schema:
+     *   Ventil 1 auf -> Verfahrzeit warten -> Pumpe an
+     *   -> Ventil 2 auf -> Überlapp warten -> Ventil 1 zu
+     *   -> [weitere Teilventile nach demselben Übergangs-Schema]
+     *   -> Pumpe aus -> Verfahrzeit warten -> letztes Ventil zu
+     * Das entspricht exakt dem normalen Sequenz-Übergang zwischen zwei
+     * Zonen (nächstes Ventil auf -> Überlapp warten -> vorheriges Ventil
+     * zu), nur innerhalb einer einzigen logischen Zone angewendet: die
+     * Teilventile sind dabei während der Überlapp-Zeit kurz gemeinsam
+     * offen, danach läuft immer nur ein Teilventil.
      */
     private function lawnChainSteps(array $zone, int $idx, int $perMemberDurationSeconds): array
     {
         $steps = [];
         $members = $zone['valves'];
         $count = count($members);
+        $overlap = max(0, $this->ReadPropertyInteger('OverlapTime'));
 
         foreach ($members as $i => $v) {
             $label = $count > 1 ? ($zone['name'] . ' – Teil ' . ($i + 1) . '/' . $count) : $zone['name'];
             $travel = max(1, (int)($v['travel'] ?? 7));
 
-            $steps[] = ['cmd' => 'status', 'param' => 'öffne ' . $label];
-            $steps[] = ['cmd' => 'valve_on', 'zone' => $idx, 'member' => $i, 'post' => $travel];
-            $steps[] = ['cmd' => 'pump_on'];
-            $steps[] = ['cmd' => 'status', 'param' => 'bewässere ' . $label, 'post' => $perMemberDurationSeconds];
-            $steps[] = ['cmd' => 'pump_off', 'post' => $travel];
-            $steps[] = ['cmd' => 'valve_off', 'zone' => $idx, 'member' => $i];
+            if ($i === 0) {
+                // Erstes Teilventil: Ventil auf -> Verfahrzeit -> Pumpe an
+                $steps[] = ['cmd' => 'status', 'param' => 'öffne ' . $label];
+                $steps[] = ['cmd' => 'valve_on', 'zone' => $idx, 'member' => $i, 'post' => $travel];
+                $steps[] = ['cmd' => 'pump_on'];
+                $steps[] = ['cmd' => 'status', 'param' => 'bewässere ' . $label, 'post' => $perMemberDurationSeconds];
+            } else {
+                // Übergang zum nächsten Teilventil: nächstes Ventil auf ->
+                // Überlapp warten -> vorheriges Ventil zu (wie beim normalen
+                // Sequenz-Übergang zwischen zwei Zonen)
+                $steps[] = ['cmd' => 'valve_on', 'zone' => $idx, 'member' => $i, 'post' => $overlap];
+                $steps[] = ['cmd' => 'valve_off', 'zone' => $idx, 'member' => $i - 1];
+                $steps[] = ['cmd' => 'status', 'param' => 'bewässere ' . $label, 'post' => max(0, $perMemberDurationSeconds - $overlap)];
+            }
         }
+
+        // Abschluss: Pumpe aus -> Verfahrzeit -> letztes Teilventil zu
+        $lastIndex = $count - 1;
+        $lastTravel = max(1, (int)($members[$lastIndex]['travel'] ?? 7));
+        $steps[] = ['cmd' => 'status', 'param' => 'beende ' . $zone['name']];
+        $steps[] = ['cmd' => 'pump_off', 'post' => $lastTravel];
+        $steps[] = ['cmd' => 'valve_off', 'zone' => $idx, 'member' => $lastIndex];
 
         return $steps;
     }
@@ -1187,8 +1219,10 @@ class Bewaesserungssteuerung extends IPSModule
             // die Vorgabe der ERSTEN als "Lawn" markierten Zeile, da die
             // Sequenz-Dauer bei "Rasen" je Teilfläche gilt.
             'defaultDuration' => (int)($members[0]['DefaultDuration'] ?? 10),
-            // "sequential" = mehr als ein Ventil -> darf NIE gleichzeitig offen sein,
-            // die Teilventile werden immer strikt nacheinander geschaltet (z. B. "Rasen").
+            // "sequential" = mehr als ein Ventil -> zusammengelegte Zone (z. B.
+            // "Rasen"): Teilventile schalten über den Überlapp-Übergang nach-
+            // einander (siehe lawnChainSteps()) und laufen exklusiv, ohne dass
+            // gleichzeitig eine andere logische Zone geöffnet ist.
             'sequential'      => count($valves) > 1,
         ];
     }
