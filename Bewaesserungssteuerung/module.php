@@ -51,6 +51,7 @@ class Bewaesserungssteuerung extends IPSModule
         $this->RegisterPropertyInteger('PumpInstanceID', 0);
         $this->RegisterPropertyInteger('PressureSensorID', 0); // optional: vorhandene Variable mit Wasserdruck-Messwert
         $this->RegisterPropertyInteger('FlowSensorID', 0);     // optional: vorhandene Variable mit Durchfluss-Messwert
+        $this->RegisterPropertyInteger('PumpStatusID', 0);     // optional: vorhandene Variable mit KNX-Rückmeldung des Pumpenaktors (an/aus)
 
         $defaultZones = json_encode([
             ['Name' => 'Zone 1',       'ValveInstanceID' => 0, 'TravelTime' => 7, 'DefaultDuration' => 10, 'Lawn' => false, 'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
@@ -149,6 +150,16 @@ class Bewaesserungssteuerung extends IPSModule
         $this->RegisterVariableString('Status', 'Status', '', 30);
         if ($newStatus) {
             $this->SetValue('Status', 'Bereit');
+        }
+
+        // Pumpenstatus: reine Anzeigevariable, die optional die tatsächliche
+        // KNX-Rückmeldung des Pumpenaktors spiegelt (siehe updateSensorDisplays()).
+        // Ohne konfigurierte Rückmeldevariable bleibt sie beim zuletzt bekannten
+        // Wert stehen (Startwert: aus).
+        $newPumpStatus = @$this->GetIDForIdent('PumpStatus') === false;
+        $this->RegisterVariableBoolean('PumpStatus', 'Pumpenstatus (Rückmeldung)', '~Switch', 31);
+        if ($newPumpStatus) {
+            $this->SetValue('PumpStatus', false);
         }
 
         // Wasserdruck/Durchfluss: reine Anzeigevariablen, die optional den
@@ -756,19 +767,28 @@ class Bewaesserungssteuerung extends IPSModule
             $this->setZoneManualTarget($idx, $durSeconds);
 
             $steps = [];
-            if (!$pumpOn) {
-                // Erste Zone: Ventil auf -> Verfahrzeit -> Pumpe an
+            if (count($open) === 0) {
+                // Erste Zone: Ventil auf -> Verfahrzeit -> Pumpe an.
+                // Hinweis: Hier wird bewusst count($open)===0 statt des
+                // "PumpOnSince"-Merkers geprüft. Der Merker wird erst
+                // gesetzt, wenn der pump_on-Schritt tatsächlich ausgeführt
+                // wurde (nach Ablauf der Verfahrzeit) – die Open-Liste
+                // dagegen sofort, wenn ein Ventil-auf-Befehl ausgeführt
+                // wird. Bei zwei fast gleichzeitig geschalteten Zonen ist
+                // die Open-Liste damit das zuverlässigere Signal, ob schon
+                // eine Öffnungs-Choreografie läuft.
                 $steps[] = ['cmd' => 'status', 'param' => 'Manuell: öffne ' . $name];
                 $steps[] = ['cmd' => 'valve_on', 'zone' => $idx, 'post' => $this->travel($idx)];
                 $steps[] = ['cmd' => 'pump_on'];
                 $steps[] = ['cmd' => 'status', 'param' => 'Manuell: ' . $name . ' aktiv'];
             } else {
-                // Pumpe läuft laut Merker bereits (andere Zone offen): Ventil
-                // einfach öffnen. "pump_on" wird sicherheitshalber TROTZDEM
-                // eingereiht (setPump() sendet den Befehl immer, auch wenn
-                // die Pumpe laut Merker schon läuft) – so schließt sich auch
-                // dann keine Lücke, wenn der Merker durch einen unterbrochenen
-                // Vorgang einmal nicht mit der Realität übereinstimmt.
+                // Es ist schon eine andere Zone offen bzw. gerade dabei zu
+                // öffnen: Ventil einfach öffnen. "pump_on" wird
+                // sicherheitshalber TROTZDEM eingereiht (setPump() sendet
+                // den Befehl immer, auch wenn die Pumpe laut Merker schon
+                // läuft) – so schließt sich auch dann keine Lücke, wenn der
+                // Merker durch einen unterbrochenen Vorgang einmal nicht
+                // mit der Realität übereinstimmt.
                 $steps[] = ['cmd' => 'valve_on', 'zone' => $idx];
                 $steps[] = ['cmd' => 'pump_on'];
                 $steps[] = ['cmd' => 'status', 'param' => 'Manuell: ' . $name . ' zusätzlich aktiv'];
@@ -1109,6 +1129,7 @@ class Bewaesserungssteuerung extends IPSModule
             // Vorgang oder einem nicht angekommenen KNX-Telegramm) dazu
             // führt, dass die Pumpe bei der nächsten Zone gar nicht mehr
             // eingeschaltet wird.
+            $this->LogMessage('Pumpe AN (offene Zonen: ' . implode(',', $this->openList()) . ')', KL_NOTIFY);
             $this->knxSwitch($instanceID, true);
             if ($this->ReadAttributeInteger('PumpOnSince') === 0) {
                 $this->WriteAttributeInteger('PumpOnSince', time());
@@ -1118,6 +1139,7 @@ class Bewaesserungssteuerung extends IPSModule
                 }
             }
         } else {
+            $this->LogMessage('Pumpe AUS (offene Zonen: ' . implode(',', $this->openList()) . ')', KL_NOTIFY);
             $this->knxSwitch($instanceID, false);
             $since = $this->ReadAttributeInteger('PumpOnSince');
             if ($since > 0) {
@@ -1400,13 +1422,31 @@ class Bewaesserungssteuerung extends IPSModule
     }
 
     /**
-     * Spiegelt die optional verknüpften Sensor-Variablen (Wasserdruck,
-     * Durchfluss) in die eigenen Anzeigevariablen "Pressure"/"Flow". Ist
-     * kein Sensor konfiguriert oder die verknüpfte Variable nicht (mehr)
-     * vorhanden, bleibt der zuletzt bekannte Wert stehen.
+     * Spiegelt die optional verknüpften Sensor-/Rückmeldevariablen
+     * (Pumpenstatus, Wasserdruck, Durchfluss) in die eigenen
+     * Anzeigevariablen. Ist nichts konfiguriert oder die verknüpfte
+     * Variable nicht (mehr) vorhanden, bleibt der zuletzt bekannte Wert
+     * stehen. Bei der Pumpen-Rückmeldung wird zusätzlich mit dem intern
+     * angenommenen Zustand (PumpOnSince) verglichen und eine Abweichung
+     * im Meldungsfenster protokolliert – das erleichtert die Diagnose bei
+     * einem Status-Desync (siehe Abschnitt „Pumpen-Status" in der README).
      */
     private function updateSensorDisplays(): void
     {
+        $pumpStatusID = $this->ReadPropertyInteger('PumpStatusID');
+        if ($pumpStatusID > 0 && IPS_VariableExists($pumpStatusID)) {
+            $actual = (bool)GetValue($pumpStatusID);
+            $this->SetValue('PumpStatus', $actual);
+
+            $assumed = $this->ReadAttributeInteger('PumpOnSince') > 0;
+            if ($actual !== $assumed) {
+                $this->LogMessage(
+                    'Pumpen-Rückmeldung (' . ($actual ? 'an' : 'aus') . ') weicht vom intern angenommenen Zustand (' . ($assumed ? 'an' : 'aus') . ') ab',
+                    KL_WARNING
+                );
+            }
+        }
+
         $pressureID = $this->ReadPropertyInteger('PressureSensorID');
         if ($pressureID > 0 && IPS_VariableExists($pressureID)) {
             $this->SetValue('Pressure', (float)GetValue($pressureID));
@@ -1515,6 +1555,7 @@ class Bewaesserungssteuerung extends IPSModule
                 continue; // noch nicht fällig
             }
             $this->setZoneManualTarget($idx, 0);
+            $this->LogMessage('Manuelle Dauer abgelaufen für Zone-Index ' . $idx . ' (seit ' . (time() - $since) . 's, Ziel war ' . $targetSeconds . 's) – schließe automatisch', KL_NOTIFY);
             $this->enqueue($this->autoCloseSteps($idx));
         }
     }
@@ -1591,6 +1632,11 @@ class Bewaesserungssteuerung extends IPSModule
                     'type'    => 'SelectInstance',
                     'name'    => 'PumpInstanceID',
                     'caption' => 'Pumpe – KNX-Instanz ("Schalten", DPT1)'
+                ],
+                [
+                    'type'    => 'SelectVariable',
+                    'name'    => 'PumpStatusID',
+                    'caption' => 'Pumpenstatus-Rückmeldung (optional, vorhandene Variable)'
                 ],
                 [
                     'type'    => 'SelectVariable',

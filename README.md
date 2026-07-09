@@ -43,6 +43,10 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
   gelegten Rasen-Zone genügt es, wenn **eine** der beiden Teilflächen
   trocken meldet, dann wird gegossen (siehe „Sensor-Logik im Detail" unten).
 - Master-Schalter
+- Optionale Anzeige des **echten Pumpenstatus** (KNX-Rückmeldung des
+  Pumpenaktors) im WebFront direkt unter „Status" – zeigt, ob die Pumpe
+  wirklich läuft, unabhängig von der internen Annahme des Moduls;
+  Abweichungen werden zusätzlich im Meldungsfenster protokolliert
 - Optionale Anzeige von **Wasserdruck** und **Durchfluss** im WebFront
   (zwischen „Status" und „Startzeit Sequenz 1"), gespeist aus je einer
   frei wählbaren, bereits vorhandenen Sensor-Variable
@@ -112,14 +116,21 @@ Schritt-Warteschlange – kein `IPS_Sleep`, keine hängenden PHP-Threads.
 
 1. **Pumpe – KNX-Instanz**: die zuvor angelegte „Schalten"-Geräteinstanz
    (DPT1) der Pumpen-Gruppenadresse im Objektbaum auswählen
-2. **Wasserdrucksensor / Durchflusssensor** (beide optional): vorhandene
+2. **Pumpenstatus-Rückmeldung** (optional): vorhandene IP-Symcon-Variable
+   auswählen, die den tatsächlichen Ein/Aus-Zustand des Pumpenaktors per
+   KNX-Rückmeldung führt. Damit lässt sich im WebFront jederzeit prüfen,
+   ob die Pumpe wirklich läuft — unabhängig von der internen Annahme des
+   Moduls. Weicht der gemeldete Wert vom intern angenommenen Zustand ab,
+   wird das zusätzlich im Meldungsfenster protokolliert. Ohne Auswahl
+   bleibt die Anzeige beim zuletzt bekannten Wert stehen.
+3. **Wasserdrucksensor / Durchflusssensor** (beide optional): vorhandene
    IP-Symcon-Variable auswählen, die den jeweiligen Messwert führt (z. B.
    eine KNX-DPT9-Geräteinstanz mit eigener Statusvariable). Der Wert wird
    alle 10 Sekunden in die WebFront-Anzeigen „Wasserdruck"/„Durchfluss"
    gespiegelt. Ohne Auswahl bleiben beide Anzeigen bei 0.
-3. **Anzeigename der zusammengelegten Rasen-Zone**: Standard „Rasen",
+4. **Anzeigename der zusammengelegten Rasen-Zone**: Standard „Rasen",
    nach Wunsch änderbar
-4. **Physische Beregnungszonen**: pro Zeile
+5. **Physische Beregnungszonen**: pro Zeile
    - **Name** — frei wählbar
    - **Motorkugelhahn – KNX-Instanz** — die „Schalten"-Geräteinstanz (DPT1)
      dieses Ventils auswählen
@@ -144,7 +155,7 @@ Schritt-Warteschlange – kein `IPS_Sleep`, keine hängenden PHP-Threads.
      resistiven/Rohwert-Sensoren); Standard ist „hoher Wert = feucht"
    - Die Zeilenreihenfolge bestimmt die spätere Zonennummer (nach der
      Rasen-Zusammenlegung)
-5. **Sequenz 1 / Sequenz 2**: pro Zeile logische Zone, Dauer, Intervall
+6. **Sequenz 1 / Sequenz 2**: pro Zeile logische Zone, Dauer, Intervall
    (Tage), „Parallel zur vorherigen Zone" und Aktiv-Haken. Die
    Zeilenreihenfolge ist die Bewässerungsreihenfolge. Die Zonen-Auswahl
    zeigt bereits die logischen Kreise nach der Rasen-Zusammenlegung.
@@ -157,7 +168,7 @@ Schritt-Warteschlange – kein `IPS_Sleep`, keine hängenden PHP-Threads.
    **je Teilfläche** (Rasen links UND Rasen rechts laufen jeweils so
    lange) – die tatsächliche Gesamtlaufzeit ist also etwa doppelt so lang
    plus Verfahrzeiten. Der „Parallel"-Haken hat für „Rasen" keine Wirkung.
-6. Übernehmen. Die WebFront-Variablen werden automatisch angelegt.
+7. Übernehmen. Die WebFront-Variablen werden automatisch angelegt.
 
 ## Bedienung im WebFront
 
@@ -173,6 +184,7 @@ getrennt.
 | Master-Schalter | Aus = sofortiger geordneter Stopp, Automatik gesperrt |
 | Automatik-Sequenz | Buttons: Stopp / Sequenz 1 / Sequenz 2 (manueller Start) |
 | Status | Klartext, was gerade passiert (inkl. wegen Feuchte übersprungener Zonen) |
+| Pumpenstatus (Rückmeldung) | reine Anzeige (an/aus); zeigt die tatsächliche KNX-Rückmeldung des Pumpenaktors, alle 10 s aktualisiert. Weicht sie vom intern angenommenen Zustand ab, wird das zusätzlich im Meldungsfenster protokolliert (siehe „Pumpen-Status: Absicherung gegen Status-Desync" unten) |
 | Wasserdruck | reine Anzeige (bar); zeigt den Wert der unter „Wasserdrucksensor" verknüpften Variable, alle 10 s aktualisiert |
 | Durchfluss | reine Anzeige (l/min); zeigt den Wert der unter „Durchflusssensor" verknüpften Variable, alle 10 s aktualisiert |
 | Restlaufzeit | reine Anzeige (Minuten, aufgerundet); verbleibende Zeit bis zum vollständigen Abschluss der aktuell laufenden Automatik-Sequenz **oder** manuellen Bewässerung. 0, wenn nichts aktiv ist. Aktualisiert sich bei jeder Zustandsänderung sofort sowie zusätzlich alle 10 s |
@@ -302,6 +314,26 @@ Zone nicht reagiert, hilft in jedem Fall ein Klick auf „Alles stoppen" (im
 Instanz-Editor als Button verfügbar, im WebFront über die Automatik-
 Sequenz-Auswahl „Stopp") – das setzt den internen Zustand zuverlässig
 zurück.
+
+### Fast gleichzeitiges Einschalten mehrerer Zonen
+
+Werden zwei Zonen manuell innerhalb weniger Sekunden nacheinander
+eingeschaltet (bevor die erste Zone ihre eigene Verfahrzeit-Wartezeit
+abgeschlossen hat), prüft das Modul seit dieser Version anhand der Liste
+der bereits offenen Zonen – nicht mehr anhand des zeitlich nachlaufenden
+„PumpOnSince"-Merkers – ob schon eine Öffnungs-Choreografie läuft. Das
+verhindert, dass zwei fast zeitgleich gestartete Zonen sich gegenseitig
+mit doppelten, in falscher Reihenfolge verarbeiteten Schalt-Schritten in
+die Quere kommen.
+
+### Diagnose im Meldungsfenster
+
+Für den Fall, dass es trotzdem einmal zu unerwartetem Pumpenverhalten
+kommt, protokolliert das Modul jetzt jeden Pumpen-Ein-/Ausschaltbefehl
+sowie jedes automatische Schließen einer abgelaufenen manuellen Zone im
+Symcon-Meldungsfenster (inkl. der zu diesem Zeitpunkt offenen Zonen bzw.
+der verstrichenen/eingestellten Dauer). Damit lässt sich der genaue
+Auslöser im Nachhinein nachvollziehen.
 
 ## Bekannte Annahmen / Grenzen
 
