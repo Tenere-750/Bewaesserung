@@ -49,6 +49,8 @@ class Bewaesserungssteuerung extends IPSModule
         // Eigenschaften (Konfiguration)
         // ------------------------------------------------------------------
         $this->RegisterPropertyInteger('PumpInstanceID', 0);
+        $this->RegisterPropertyInteger('PressureSensorID', 0); // optional: vorhandene Variable mit Wasserdruck-Messwert
+        $this->RegisterPropertyInteger('FlowSensorID', 0);     // optional: vorhandene Variable mit Durchfluss-Messwert
 
         $defaultZones = json_encode([
             ['Name' => 'Zone 1',       'ValveInstanceID' => 0, 'TravelTime' => 7, 'DefaultDuration' => 10, 'Lawn' => false, 'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false],
@@ -108,6 +110,16 @@ class Bewaesserungssteuerung extends IPSModule
             IPS_SetVariableProfileAssociation('BWS.SeqControl', 1, 'Sequenz 1', '', 0x40A0FF);
             IPS_SetVariableProfileAssociation('BWS.SeqControl', 2, 'Sequenz 2', '', 0x4040FF);
         }
+        if (!IPS_VariableProfileExists('BWS.Pressure')) {
+            IPS_CreateVariableProfile('BWS.Pressure', VARIABLETYPE_FLOAT);
+            IPS_SetVariableProfileText('BWS.Pressure', '', ' bar');
+            IPS_SetVariableProfileDigits('BWS.Pressure', 2);
+        }
+        if (!IPS_VariableProfileExists('BWS.Flow')) {
+            IPS_CreateVariableProfile('BWS.Flow', VARIABLETYPE_FLOAT);
+            IPS_SetVariableProfileText('BWS.Flow', '', ' l/min');
+            IPS_SetVariableProfileDigits('BWS.Flow', 1);
+        }
 
         // ------------------------------------------------------------------
         // Timer
@@ -138,6 +150,12 @@ class Bewaesserungssteuerung extends IPSModule
         if ($newStatus) {
             $this->SetValue('Status', 'Bereit');
         }
+
+        // Wasserdruck/Durchfluss: reine Anzeigevariablen, die optional den
+        // Messwert einer bereits vorhandenen Sensor-Variable spiegeln (siehe
+        // updateSensorDisplays()). Ohne konfigurierten Sensor bleiben sie bei 0.
+        $this->RegisterVariableFloat('Pressure', 'Wasserdruck', 'BWS.Pressure', 32);
+        $this->RegisterVariableFloat('Flow', 'Durchfluss', 'BWS.Flow', 34);
 
         $newST1 = @$this->GetIDForIdent('StartTime1') === false;
         $this->RegisterVariableInteger('StartTime1', 'Startzeit Sequenz 1 (morgens)', '~UnixTimestampTime', 40);
@@ -194,12 +212,18 @@ class Bewaesserungssteuerung extends IPSModule
             $this->MaintainVariable('ManualZ' . $i, $name, VARIABLETYPE_BOOLEAN, '~Switch', 100 + $i, $used);
             if ($used) {
                 $this->EnableAction('ManualZ' . $i);
+                // MaintainVariable aktualisiert den Namen bei bereits vorhandenen
+                // Variablen nicht zuverlässig – daher hier explizit nachziehen,
+                // damit eine Umbenennung der Zone im Konfigurator auch im
+                // WebFront ankommt.
+                IPS_SetName($this->GetIDForIdent('ManualZ' . $i), $name);
             }
 
             $newDur = $used && @$this->GetIDForIdent('ManualDurationZ' . $i) === false;
             $this->MaintainVariable('ManualDurationZ' . $i, $name . ' – manuelle Dauer', VARIABLETYPE_INTEGER, 'BWS.Minutes', 150 + $i, $used);
             if ($used) {
                 $this->EnableAction('ManualDurationZ' . $i);
+                IPS_SetName($this->GetIDForIdent('ManualDurationZ' . $i), $name . ' – manuelle Dauer');
                 if ($newDur) {
                     $this->SetValue('ManualDurationZ' . $i, $logical[$i]['defaultDuration']);
                 }
@@ -220,6 +244,7 @@ class Bewaesserungssteuerung extends IPSModule
         $this->SetTimerInterval('Schedule', 10000);
         $this->updateRuntimeDisplay();
         $this->updateAllZoneRuntimeDisplays();
+        $this->updateSensorDisplays();
     }
 
     /**
@@ -583,6 +608,7 @@ class Bewaesserungssteuerung extends IPSModule
         }
         $this->updateRuntimeDisplay();
         $this->updateAllZoneRuntimeDisplays();
+        $this->updateSensorDisplays();
         $this->checkManualDeadlines();
 
         // --- Automatikstart -----------------------------------------------
@@ -1344,6 +1370,25 @@ class Bewaesserungssteuerung extends IPSModule
         }
     }
 
+    /**
+     * Spiegelt die optional verknüpften Sensor-Variablen (Wasserdruck,
+     * Durchfluss) in die eigenen Anzeigevariablen "Pressure"/"Flow". Ist
+     * kein Sensor konfiguriert oder die verknüpfte Variable nicht (mehr)
+     * vorhanden, bleibt der zuletzt bekannte Wert stehen.
+     */
+    private function updateSensorDisplays(): void
+    {
+        $pressureID = $this->ReadPropertyInteger('PressureSensorID');
+        if ($pressureID > 0 && IPS_VariableExists($pressureID)) {
+            $this->SetValue('Pressure', (float)GetValue($pressureID));
+        }
+
+        $flowID = $this->ReadPropertyInteger('FlowSensorID');
+        if ($flowID > 0 && IPS_VariableExists($flowID)) {
+            $this->SetValue('Flow', (float)GetValue($flowID));
+        }
+    }
+
     // ------------------------------------------------------------------
     // Manuelle Bewässerungsdauer je Zone: unabhängig von der seriellen
     // Schalt-Warteschlange verwaltet, damit mehrere manuell geöffnete Zonen
@@ -1467,6 +1512,16 @@ class Bewaesserungssteuerung extends IPSModule
                     'type'    => 'SelectInstance',
                     'name'    => 'PumpInstanceID',
                     'caption' => 'Pumpe – KNX-Instanz ("Schalten", DPT1)'
+                ],
+                [
+                    'type'    => 'SelectVariable',
+                    'name'    => 'PressureSensorID',
+                    'caption' => 'Wasserdrucksensor (optional, vorhandene Variable)'
+                ],
+                [
+                    'type'    => 'SelectVariable',
+                    'name'    => 'FlowSensorID',
+                    'caption' => 'Durchflusssensor (optional, vorhandene Variable)'
                 ],
                 [
                     'type'    => 'ValidationTextBox',
