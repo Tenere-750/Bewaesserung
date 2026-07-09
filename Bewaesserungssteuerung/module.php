@@ -157,6 +157,11 @@ class Bewaesserungssteuerung extends IPSModule
         $this->RegisterVariableFloat('Pressure', 'Wasserdruck', 'BWS.Pressure', 32);
         $this->RegisterVariableFloat('Flow', 'Durchfluss', 'BWS.Flow', 34);
 
+        // Restlaufzeit: verbleibende Zeit bis zum vollständigen Abschluss der
+        // aktuell laufenden Automatik-Sequenz bzw. manuellen Bewässerung
+        // (siehe updateRemainingDisplay()). 0, wenn nichts aktiv ist.
+        $this->RegisterVariableInteger('Remaining', 'Restlaufzeit', 'BWS.Minutes', 36);
+
         $newST1 = @$this->GetIDForIdent('StartTime1') === false;
         $this->RegisterVariableInteger('StartTime1', 'Startzeit Sequenz 1 (morgens)', '~UnixTimestampTime', 40);
         $this->EnableAction('StartTime1');
@@ -245,6 +250,7 @@ class Bewaesserungssteuerung extends IPSModule
         $this->updateRuntimeDisplay();
         $this->updateAllZoneRuntimeDisplays();
         $this->updateSensorDisplays();
+        $this->updateRemainingDisplay();
     }
 
     /**
@@ -610,6 +616,7 @@ class Bewaesserungssteuerung extends IPSModule
         $this->updateAllZoneRuntimeDisplays();
         $this->updateSensorDisplays();
         $this->checkManualDeadlines();
+        $this->updateRemainingDisplay();
 
         // --- Automatikstart -----------------------------------------------
         if (!$this->GetValue('Active')) {
@@ -676,6 +683,7 @@ class Bewaesserungssteuerung extends IPSModule
             $this->SetTimerInterval('Queue', 0);
         } finally {
             IPS_SemaphoreLeave($this->sem());
+            $this->updateRemainingDisplay();
         }
     }
 
@@ -755,8 +763,14 @@ class Bewaesserungssteuerung extends IPSModule
                 $steps[] = ['cmd' => 'pump_on'];
                 $steps[] = ['cmd' => 'status', 'param' => 'Manuell: ' . $name . ' aktiv'];
             } else {
-                // Pumpe läuft bereits (andere Zone offen): Ventil einfach öffnen
+                // Pumpe läuft laut Merker bereits (andere Zone offen): Ventil
+                // einfach öffnen. "pump_on" wird sicherheitshalber TROTZDEM
+                // eingereiht (setPump() sendet den Befehl immer, auch wenn
+                // die Pumpe laut Merker schon läuft) – so schließt sich auch
+                // dann keine Lücke, wenn der Merker durch einen unterbrochenen
+                // Vorgang einmal nicht mit der Realität übereinstimmt.
                 $steps[] = ['cmd' => 'valve_on', 'zone' => $idx];
+                $steps[] = ['cmd' => 'pump_on'];
                 $steps[] = ['cmd' => 'status', 'param' => 'Manuell: ' . $name . ' zusätzlich aktiv'];
             }
             $this->enqueue($steps);
@@ -786,8 +800,9 @@ class Bewaesserungssteuerung extends IPSModule
             // um eine Verfahrzeit verzögert, nie in falscher Reihenfolge.
 
             $steps = [];
-            if ($pumpOn && count($open) === 1) {
+            if (count($open) === 1) {
                 // Letzte offene Zone: Pumpe aus -> Verfahrzeit -> Ventil zu
+                // (Pumpe-aus wird bewusst immer gesendet, siehe shutdownSteps())
                 $steps[] = ['cmd' => 'status', 'param' => 'Manuell: beende ' . $name];
                 $steps[] = ['cmd' => 'pump_off', 'post' => $this->travel($idx)];
                 $steps[] = ['cmd' => 'valve_off', 'zone' => $idx];
@@ -881,9 +896,10 @@ class Bewaesserungssteuerung extends IPSModule
         }
         $zones = $this->logicalZones();
         $name = $zones[$idx]['name'] ?? ('Zone ' . $idx);
-        $pumpOn = $this->ReadAttributeInteger('PumpOnSince') > 0;
 
-        if ($pumpOn && count($open) === 1) {
+        if (count($open) === 1) {
+            // Letzte offene Zone: Pumpe-aus wird bewusst immer gesendet
+            // (siehe shutdownSteps()), unabhängig vom internen PumpOnSince-Merker.
             return [
                 ['cmd' => 'status', 'param' => 'Manuell: beende ' . $name],
                 ['cmd' => 'pump_off', 'post' => $this->travel($idx)],
@@ -897,19 +913,24 @@ class Bewaesserungssteuerung extends IPSModule
     /**
      * Erzeugt Schritte, um den aktuellen Zustand geordnet herunterzufahren:
      * Pumpe aus -> max. Verfahrzeit warten -> alle offenen Ventile zu.
+     * Das Pumpe-aus-Kommando wird bewusst IMMER gesendet (nicht nur, wenn
+     * der interne "PumpOnSince"-Merker die Pumpe als an führt) – so bleibt
+     * "Alles stoppen" auch dann ein zuverlässiger Notausschalter, wenn
+     * dieser Merker durch einen unterbrochenen Vorgang oder ein verlorenes
+     * KNX-Telegramm einmal nicht mit der Realität übereinstimmt.
      */
     private function shutdownSteps(): array
     {
         $steps = [];
         $open = $this->openList();
-        if ($this->ReadAttributeInteger('PumpOnSince') > 0) {
-            $maxTravel = 7;
-            foreach ($open as $i) {
-                $maxTravel = max($maxTravel, $this->travel($i));
-            }
-            $steps[] = ['cmd' => 'status', 'param' => 'Stoppe laufende Bewässerung …'];
-            $steps[] = ['cmd' => 'pump_off', 'post' => $maxTravel];
+
+        $maxTravel = 7;
+        foreach ($open as $i) {
+            $maxTravel = max($maxTravel, $this->travel($i));
         }
+        $steps[] = ['cmd' => 'status', 'param' => 'Stoppe laufende Bewässerung …'];
+        $steps[] = ['cmd' => 'pump_off', 'post' => $maxTravel];
+
         foreach ($open as $i) {
             $members = $this->zoneOpenMembers($i);
             if (count($members) === 0) {
@@ -1080,8 +1101,16 @@ class Bewaesserungssteuerung extends IPSModule
     {
         $instanceID = $this->ReadPropertyInteger('PumpInstanceID');
         if ($state) {
+            // WICHTIG: Der Einschaltbefehl wird immer gesendet, unabhängig
+            // vom internen "PumpOnSince"-Merker. Das Senden ist bei einer
+            // bereits laufenden Pumpe unschädlich (Telegramm mit Wert true
+            // an eine Pumpe, die schon an ist), verhindert aber, dass ein
+            // verfälschter interner Merker (z. B. nach einem unterbrochenen
+            // Vorgang oder einem nicht angekommenen KNX-Telegramm) dazu
+            // führt, dass die Pumpe bei der nächsten Zone gar nicht mehr
+            // eingeschaltet wird.
+            $this->knxSwitch($instanceID, true);
             if ($this->ReadAttributeInteger('PumpOnSince') === 0) {
-                $this->knxSwitch($instanceID, true);
                 $this->WriteAttributeInteger('PumpOnSince', time());
                 // Für alle bereits offenen Zonen beginnt jetzt die tatsächliche Bewässerung
                 foreach ($this->openList() as $i) {
@@ -1387,6 +1416,56 @@ class Bewaesserungssteuerung extends IPSModule
         if ($flowID > 0 && IPS_VariableExists($flowID)) {
             $this->SetValue('Flow', (float)GetValue($flowID));
         }
+    }
+
+    /**
+     * Ermittelt die verbleibende Zeit bis zum vollständigen Abschluss der
+     * aktuell laufenden Aktivität und schreibt sie (in Minuten, aufgerundet)
+     * in die Anzeigevariable "Remaining". Deckt beide Fälle ab:
+     * - Automatik-Sequenz bzw. "Rasen"-Kette: Summe der noch ausstehenden
+     *   Wartezeiten in der seriellen Warteschlange (queueRemainingSeconds).
+     * - Manuell geöffnete einfache Zone(n): Ziel-Dauer minus bereits
+     *   verstrichene Bewässerungszeit (ZoneManualTarget/zoneRunSince).
+     * Da beide Mechanismen sich gegenseitig ausschließen (siehe Exklusivität
+     * von "Rasen" bzw. Sperre der manuellen Bedienung während einer
+     * Sequenz), wird einfach das Maximum beider Quellen verwendet.
+     */
+    private function updateRemainingDisplay(): void
+    {
+        $remaining = $this->queueRemainingSeconds();
+
+        $targets = json_decode($this->ReadAttributeString('ZoneManualTarget'), true) ?: [];
+        foreach ($targets as $idxStr => $targetSeconds) {
+            $since = $this->zoneRunSince((int)$idxStr);
+            $zoneRemaining = $since > 0
+                ? max(0, (int)$targetSeconds - (time() - $since))
+                : (int)$targetSeconds; // noch nicht aktiv wässernd (Verfahrzeit läuft) -> volle Dauer als Rest
+            $remaining = max($remaining, $zoneRemaining);
+        }
+
+        $this->SetValue('Remaining', (int)ceil(max(0, $remaining) / 60));
+    }
+
+    /**
+     * Summe aller noch ausstehenden Wartezeiten in der seriellen
+     * Warteschlange: die aktuell laufende Wartezeit (falls vorhanden) plus
+     * alle "post"-Werte der noch nicht ausgeführten Schritte.
+     */
+    private function queueRemainingSeconds(): int
+    {
+        $remaining = 0;
+
+        $wait = (int)$this->GetBuffer('WaitUntil');
+        if ($wait > time()) {
+            $remaining += $wait - time();
+        }
+
+        $queue = json_decode($this->GetBuffer('Queue'), true) ?: [];
+        foreach ($queue as $step) {
+            $remaining += (int)($step['post'] ?? 0);
+        }
+
+        return $remaining;
     }
 
     // ------------------------------------------------------------------

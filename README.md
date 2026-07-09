@@ -46,6 +46,9 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
 - Optionale Anzeige von **Wasserdruck** und **Durchfluss** im WebFront
   (zwischen „Status" und „Startzeit Sequenz 1"), gespeist aus je einer
   frei wählbaren, bereits vorhandenen Sensor-Variable
+- **Restlaufzeit** im WebFront (direkt unter „Durchfluss"): verbleibende
+  Zeit bis zum vollständigen Abschluss der aktuell laufenden
+  Automatik-Sequenz oder manuellen Bewässerung
 - Manuelle Steuerung jeder (logischen) Zone im WebFront, **mit direkt im
   WebFront einstellbarer Bewässerungsdauer je Kreis** – die Zone schaltet
   nach Ablauf automatisch wieder ab, statt unbegrenzt offen zu bleiben
@@ -172,6 +175,7 @@ getrennt.
 | Status | Klartext, was gerade passiert (inkl. wegen Feuchte übersprungener Zonen) |
 | Wasserdruck | reine Anzeige (bar); zeigt den Wert der unter „Wasserdrucksensor" verknüpften Variable, alle 10 s aktualisiert |
 | Durchfluss | reine Anzeige (l/min); zeigt den Wert der unter „Durchflusssensor" verknüpften Variable, alle 10 s aktualisiert |
+| Restlaufzeit | reine Anzeige (Minuten, aufgerundet); verbleibende Zeit bis zum vollständigen Abschluss der aktuell laufenden Automatik-Sequenz **oder** manuellen Bewässerung. 0, wenn nichts aktiv ist. Aktualisiert sich bei jeder Zustandsänderung sofort sowie zusätzlich alle 10 s |
 | Startzeit Sequenz 1/2 | Uhrzeit-Eingabe für den Automatikstart |
 | Automatik Sequenz 1/2 | Automatikstart einzeln aktivieren/deaktivieren |
 | „…" – manuelle Dauer | pro Kreis direkt im WebFront einstellbar (Minuten); bestimmt, wie lange die Zone beim nächsten manuellen Einschalten bewässert wird. Voreingestellt mit der Standard-Bewässerungsdauer aus der Zonenkonfiguration, hier aber jederzeit ohne Formular anpassbar |
@@ -267,6 +271,37 @@ mehrere manuell geöffnete Zonen unabhängig voneinander zur richtigen Zeit
 schließen, ohne dass sich die Pumpe verfrüht abschaltet oder eine zweite
 Zone blockiert bleibt. Toleranz dieser Prüfung: bis zu 10 Sekunden – für
 Bewässerungsdauern im Minutenbereich unkritisch.
+
+## Pumpen-Status: Absicherung gegen Status-Desync
+
+Das Modul merkt sich intern (Attribut „PumpOnSince"), ob die Pumpe gerade
+läuft, um unnötige Ein-/Ausschaltbefehle zu vermeiden und die Laufzeit
+korrekt zu berechnen. Da KNX-Telegramme ohne Rückmeldung gesendet werden
+(„Fire and forget"), kann dieser interne Merker im Ausnahmefall von der
+Realität abweichen – z. B. wenn ein Vorgang durch einen Symcon-Neustart
+mitten in der Ausführung unterbrochen wurde oder ein Telegramm den Bus
+nicht erreicht hat. Ohne Gegenmaßnahme hätte das zur Folge, dass die Pumpe
+bei der nächsten Zone gar nicht mehr angeschaltet wird (das Modul denkt
+„läuft schon"), oder umgekehrt beim Stoppen nicht mehr ausgeschaltet wird
+(„läuft ja laut Merker gar nicht").
+
+Deshalb gilt seit dieser Version:
+
+- Der Pumpe-**an**-Befehl wird bei jeder manuellen Zonenaktivierung und bei
+  jedem Sequenzstart **immer** gesendet, unabhängig vom internen Merker.
+  Ein zusätzliches Ein-Telegramm an eine bereits laufende Pumpe ist
+  wirkungslos, schließt aber zuverlässig die Lücke, falls der Merker
+  einmal nicht stimmt.
+- Der Pumpe-**aus**-Befehl bei „Alles stoppen" bzw. beim Schließen der
+  jeweils letzten offenen Zone wird ebenfalls **immer** gesendet – „Alles
+  stoppen" ist damit ein zuverlässiger Notausschalter, auch wenn der
+  interne Merker fälschlich „aus" anzeigt.
+
+Sollte einmal der Eindruck entstehen, dass die Pumpe bei einer bestimmten
+Zone nicht reagiert, hilft in jedem Fall ein Klick auf „Alles stoppen" (im
+Instanz-Editor als Button verfügbar, im WebFront über die Automatik-
+Sequenz-Auswahl „Stopp") – das setzt den internen Zustand zuverlässig
+zurück.
 
 ## Bekannte Annahmen / Grenzen
 
