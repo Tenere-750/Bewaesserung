@@ -175,10 +175,7 @@ class Bewaesserungssteuerung extends IPSModule
         for ($i = 0; $i < self::MAX_ZONES; $i++) {
             $used = isset($physical[$i]);
             $name = $used ? $physical[$i]['Name'] : '';
-            $this->MaintainVariable('CyclesP' . $i, $name . ' – Zyklen Kugelhahn', VARIABLETYPE_INTEGER, 'BWS.Cycles', 200 + $i, $used);
-            if ($used) {
-                IPS_SetParent($this->GetIDForIdent('CyclesP' . $i), $statsCategoryID);
-            }
+            $this->maintainStatVariable('CyclesP' . $i, $name . ' – Zyklen Kugelhahn', VARIABLETYPE_INTEGER, 'BWS.Cycles', 200 + $i, $used, $statsCategoryID);
         }
 
         // ------------------------------------------------------------------
@@ -204,21 +201,15 @@ class Bewaesserungssteuerung extends IPSModule
                 }
             }
 
-            $this->MaintainVariable('ZRunDay' . $i, $name . ' – Laufzeit heute', VARIABLETYPE_INTEGER, 'BWS.Minutes', 400 + $i, $used);
-            $this->MaintainVariable('ZRunTotal' . $i, $name . ' – Laufzeit gesamt', VARIABLETYPE_FLOAT, 'BWS.Hours', 500 + $i, $used);
-            if ($used) {
-                IPS_SetParent($this->GetIDForIdent('ZRunDay' . $i), $statsCategoryID);
-                IPS_SetParent($this->GetIDForIdent('ZRunTotal' . $i), $statsCategoryID);
-            }
+            $this->maintainStatVariable('ZRunDay' . $i, $name . ' – Laufzeit heute', VARIABLETYPE_INTEGER, 'BWS.Minutes', 400 + $i, $used, $statsCategoryID);
+            $this->maintainStatVariable('ZRunTotal' . $i, $name . ' – Laufzeit gesamt', VARIABLETYPE_FLOAT, 'BWS.Hours', 500 + $i, $used, $statsCategoryID);
         }
 
         // ------------------------------------------------------------------
         // Laufzeitanzeige (Pumpe gesamt) (-> Statistik)
         // ------------------------------------------------------------------
-        $this->RegisterVariableInteger('RuntimeDay', 'Pumpenlaufzeit heute', 'BWS.Minutes', 300);
-        $this->RegisterVariableFloat('RuntimeTotal', 'Pumpenlaufzeit gesamt', 'BWS.Hours', 310);
-        IPS_SetParent($this->GetIDForIdent('RuntimeDay'), $statsCategoryID);
-        IPS_SetParent($this->GetIDForIdent('RuntimeTotal'), $statsCategoryID);
+        $this->maintainStatVariable('RuntimeDay', 'Pumpenlaufzeit heute', VARIABLETYPE_INTEGER, 'BWS.Minutes', 300, true, $statsCategoryID);
+        $this->maintainStatVariable('RuntimeTotal', 'Pumpenlaufzeit gesamt', VARIABLETYPE_FLOAT, 'BWS.Hours', 310, true, $statsCategoryID);
 
         // Zeitplan-Prüfung alle 10 Sekunden (auch Grundlage für die
         // Auto-Abschaltung manuell gestarteter Zonen, s. checkManualDeadlines)
@@ -243,6 +234,55 @@ class Bewaesserungssteuerung extends IPSModule
         IPS_SetName($id, $name);
         IPS_SetPosition($id, $position);
         return $id;
+    }
+
+    /**
+     * Legt eine Statistik-Variable DIREKT als Kind der Statistik-Kategorie an
+     * (nicht der Instanz) bzw. pflegt sie. WICHTIG: Da diese Variablen nicht
+     * direkte Kinder der Instanz sind, funktionieren $this->GetIDForIdent()
+     * und $this->SetValue() für sie NICHT (die suchen nur direkte Kinder der
+     * Instanz) – Zugriff erfolgt stattdessen über statVarID() plus die
+     * globalen Funktionen SetValue($id, ...) / GetValue($id).
+     */
+    private function maintainStatVariable(string $ident, string $name, int $type, string $profile, int $position, bool $used, int $categoryID): void
+    {
+        if ($categoryID <= 0) {
+            return;
+        }
+        $id = @IPS_GetObjectIDByIdent($categoryID, $ident);
+
+        if (!$used) {
+            if ($id !== false) {
+                IPS_DeleteVariable($id);
+            }
+            return;
+        }
+
+        if ($id === false) {
+            $id = IPS_CreateVariable($type);
+            IPS_SetParent($id, $categoryID);
+            IPS_SetIdent($id, $ident);
+        }
+        IPS_SetName($id, $name);
+        IPS_SetPosition($id, $position);
+        if ($profile !== '') {
+            @IPS_SetVariableCustomProfile($id, $profile);
+        }
+    }
+
+    /**
+     * Löst die Objekt-ID einer Statistik-Variable auf (Kind der
+     * Statistik-Kategorie, siehe maintainStatVariable()). Gibt 0 zurück,
+     * wenn die Kategorie oder die Variable (noch) nicht existiert.
+     */
+    private function statVarID(string $ident): int
+    {
+        $catID = @$this->GetIDForIdent('StatsCategory');
+        if ($catID === false) {
+            return 0;
+        }
+        $id = @IPS_GetObjectIDByIdent($catID, $ident);
+        return $id === false ? 0 : $id;
     }
 
     // ======================================================================
@@ -495,8 +535,9 @@ class Bewaesserungssteuerung extends IPSModule
         $this->WriteAttributeString('ZoneTotalAccum', '{}');
 
         for ($i = 0; $i < self::MAX_ZONES; $i++) {
-            if (@$this->GetIDForIdent('CyclesP' . $i) !== false) {
-                $this->SetValue('CyclesP' . $i, 0);
+            $id = $this->statVarID('CyclesP' . $i);
+            if ($id > 0) {
+                SetValue($id, 0);
             }
         }
         $this->updateRuntimeDisplay();
@@ -876,8 +917,9 @@ class Bewaesserungssteuerung extends IPSModule
                     $openMembers[] = $t;
                     // Zyklenzähler: jedes Öffnen = 1 Zyklus des betroffenen physischen Kugelhahns
                     $p = $valves[$t]['physIdx'];
-                    if (@$this->GetIDForIdent('CyclesP' . $p) !== false) {
-                        $this->SetValue('CyclesP' . $p, $this->GetValue('CyclesP' . $p) + 1);
+                    $cyclesID = $this->statVarID('CyclesP' . $p);
+                    if ($cyclesID > 0) {
+                        SetValue($cyclesID, GetValue($cyclesID) + 1);
                     }
                 }
             } else {
@@ -1168,8 +1210,14 @@ class Bewaesserungssteuerung extends IPSModule
         $running = $since > 0 ? time() - $since : 0;
         $day = $this->ReadAttributeInteger('DayAccum') + $running;
         $total = $this->ReadAttributeInteger('TotalAccum') + $running;
-        $this->SetValue('RuntimeDay', (int)round($day / 60));
-        $this->SetValue('RuntimeTotal', round($total / 3600, 2));
+        $dayID = $this->statVarID('RuntimeDay');
+        $totalID = $this->statVarID('RuntimeTotal');
+        if ($dayID > 0) {
+            SetValue($dayID, (int)round($day / 60));
+        }
+        if ($totalID > 0) {
+            SetValue($totalID, round($total / 3600, 2));
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1245,11 +1293,13 @@ class Bewaesserungssteuerung extends IPSModule
         $running = $since > 0 ? time() - $since : 0;
         $day = $this->zoneDayAccum($idx) + $running;
         $total = $this->zoneTotalAccum($idx) + $running;
-        if (@$this->GetIDForIdent('ZRunDay' . $idx) !== false) {
-            $this->SetValue('ZRunDay' . $idx, (int)round($day / 60));
+        $dayID = $this->statVarID('ZRunDay' . $idx);
+        if ($dayID > 0) {
+            SetValue($dayID, (int)round($day / 60));
         }
-        if (@$this->GetIDForIdent('ZRunTotal' . $idx) !== false) {
-            $this->SetValue('ZRunTotal' . $idx, round($total / 3600, 2));
+        $totalID = $this->statVarID('ZRunTotal' . $idx);
+        if ($totalID > 0) {
+            SetValue($totalID, round($total / 3600, 2));
         }
     }
 
