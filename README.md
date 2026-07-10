@@ -81,9 +81,10 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
   inklusive Verfahrzeiten. Bei „Rasen" wird die Laufzeit als Ganzes für
   den zusammengelegten Kreis erfasst (inklusive der kurzen Überlapp-Zeit
   beim Wechsel zwischen den Teilflächen).
-- **Wasserverbrauch je Kreis** (letzte Laufzeit und gesamt, in Litern)
-  sowie als Gesamtsumme über alle Zonen — berechnet aus Durchfluss × Zeit,
-  erste Probe 20 s nach Bewässerungsbeginn, danach alle 10 s (siehe unten)
+- **Wasserverbrauch** (Liter): Summe der letzten Sequenz/manuellen
+  Bewässerung sowie Gesamtsumme über alle Läufe — berechnet aus
+  Durchfluss × Zeit, sekündlich für 20 s nach jedem Ventil-Öffnen, danach
+  alle 10 s (siehe unten)
 - Zyklenzähler pro Motorkugelhahn (jedes Öffnen = 1 Zyklus)
 
 Alle Wartezeiten laufen **nicht blockierend** über eine Timer-gesteuerte
@@ -413,39 +414,53 @@ Zonennamen — im WebFront also genau die gewünschte Darstellung
 Bestehende Werte werden beim ersten Übernehmen automatisch aus den alten
 Variablen übernommen (Migration), die alten Variablen werden entfernt.
 
-## Neu in Version 3.1: Wasserverbrauch
+## Neu in Version 3.2: Wasserverbrauch
 
-Zwei neue Statistik-Größen je Zone sowie eine Gesamtsumme:
+Zwei neue Statistik-Größen — bewusst **nicht** pro Zone, sondern als zwei
+Summenwerte:
 
-- **„… – Wasserverbrauch letzte Laufzeit"** (Liter): Verbrauch des
-  aktuellen bzw. zuletzt abgeschlossenen Bewässerungslaufs dieser Zone.
-  Läuft die Zone gerade, zählt der Wert live mit.
-- **„… – Wasserverbrauch gesamt"** (Liter): Verbrauch dieser Zone seit
-  Installation bzw. letztem Zurücksetzen.
-- **„Wasserverbrauch gesamt"** (Liter, Statistik-Ebene): Summe über alle
-  Zonen und die gesamte Zeit.
+- **„Wasserverbrauch letzte Laufzeit"** (Liter): Summe über alle Kreise,
+  die an der letzten Automatik-Sequenz oder der letzten manuellen
+  Bewässerung beteiligt waren. Läuft gerade bewässert, zählt der Wert
+  live mit; danach bleibt er stehen, bis die nächste Sequenz oder
+  manuelle Bewässerung beginnt (dann startet er wieder bei 0).
+- **„Wasserverbrauch gesamt"** (Liter): Summe über alle Kreise und alle
+  Laufzeiten seit Installation bzw. letztem Zurücksetzen.
+
+Eine „Laufzeit" in diesem Sinne ist der durchgehende Zeitraum, in dem die
+Pumpe läuft — von „Pumpe an" bis „Pumpe wieder aus". Das deckt sowohl eine
+komplette Automatik-Sequenz (inkl. aller Zonenwechsel darin) als auch eine
+manuelle Bewässerung ab, auch wenn dabei mehrere Zonen nacheinander oder
+gleichzeitig dazugeschaltet wurden — alle zählen in dieselbe Summe.
 
 **Berechnung:** Verbrauch = Durchfluss (l/min) × Zeit, auf Basis der unter
-„Durchflusssensor" verknüpften Variable (siehe oben). Die erste Probe
-erfolgt frühestens 20 Sekunden nach Beginn der aktiven Bewässerung einer
-Zone (Verfahrzeit plus Anlaufzeit des Durchflusses), danach alle 10
-Sekunden — das gilt gleichermaßen für manuell geöffnete Zonen wie für
-Zonen innerhalb einer Automatik-Sequenz, da beide dieselbe interne
-Zonen-Buchführung nutzen. Ohne konfigurierten Durchflusssensor bleiben
-alle Wasserverbrauchs-Anzeigen bei 0.
+„Durchflusssensor" verknüpften Variable (siehe oben). Ohne konfigurierten
+Durchflusssensor bleiben beide Anzeigen bei 0.
 
-**Mehrere gleichzeitig offene Zonen:** Ein einzelner Durchflusssensor
-misst den Gesamtfluss der Anlage, nicht je Zone getrennt. Sind zwei Zonen
-gleichzeitig offen (Überlapp beim Sequenzwechsel oder „Parallel"-Kopplung),
-wird der gemessene Gesamtdurchfluss für die Dauer der Überschneidung
-gleichmäßig auf die gerade offenen Zonen aufgeteilt. Das ist eine
-Näherung — für exakte Werte je Zone wäre ein Durchflusssensor pro Zone
-nötig.
+**Zeittakt der Probenahme:** Ein eigener, sich selbst steuernder Timer
+nimmt bei jedem Ventil-Öffnen-Ereignis (auch beim Zonenwechsel innerhalb
+einer Sequenz und bei der „Rasen"-Kette) für die folgenden 20 Sekunden
+**sekündlich** eine Probe, danach alle 10 Sekunden — bis keine Zone mehr
+offen ist, dann schaltet er sich automatisch ab. Das gilt unabhängig
+davon, ob die Zone manuell oder automatisch geöffnet wurde.
 
-Der Reset-Button „Zähler zurücksetzen" setzt jetzt auch die
-Wasserverbrauchs-Gesamtsummen zurück (der Verbrauch des gerade laufenden
-Bewässerungslaufs bleibt unberührt, da er sich beim nächsten Zonenstart
-ohnehin automatisch zurücksetzt).
+*Warum dieser Takt?* Nach dem Öffnen eines Motorkugelhahns braucht der
+Durchfluss eine Weile, bis er sich stabilisiert hat — erfahrungsgemäß rund
+20 Sekunden. In dieser Einschwingphase schwankt der Messwert noch spürbar,
+deshalb wird dort **fein (sekündlich)** gemessen, damit der tatsächlich
+geflossene Verbrauch trotz der Schwankung genau erfasst wird. Sobald sich
+der Durchfluss nach etwa 20 Sekunden eingependelt hat, genügt der gröbere
+10-Sekunden-Takt, um Rechenlast zu sparen, ohne an Genauigkeit zu
+verlieren. Jede Probe rechnet dabei den aktuellen Durchfluss mit der
+tatsächlich seit der letzten Probe vergangenen Zeit hoch — der 1-Sekunden-
+und der 10-Sekunden-Takt liefern also denselben aufsummierten Verbrauch,
+nur mit unterschiedlich feiner Auflösung. Weil jeder Zonenwechsel (neues
+Ventil öffnet) den 20-Sekunden-Zähler neu startet, wird auch die
+Einschwingphase jedes folgenden Kreises sekündlich erfasst.
+
+Der Reset-Button „Zähler zurücksetzen" setzt die Gesamtsumme zurück; die
+Summe der aktuellen/letzten Laufzeit bleibt unberührt, da sie sich beim
+nächsten Sequenz- bzw. manuellen Start ohnehin automatisch auf 0 setzt.
 
 ## Bekannte Annahmen / Grenzen
 

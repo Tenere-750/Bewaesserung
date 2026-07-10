@@ -91,10 +91,10 @@ class Bewaesserungssteuerung extends IPSModule
         $this->RegisterAttributeString('ZoneDayAccum', '{}');   // je logischer Zone: Laufzeit heute in Sekunden
         $this->RegisterAttributeString('ZoneTotalAccum', '{}'); // je logischer Zone: Laufzeit gesamt in Sekunden
         $this->RegisterAttributeString('ZoneManualTarget', '{}'); // je logischer Zone: gewünschte manuelle Bewässerungsdauer in Sekunden (0/fehlt = kein Auto-Timer aktiv)
-        $this->RegisterAttributeString('WaterRunSample', '{}');  // je logischer Zone: Zeitpunkt der letzten Verbrauchs-Probe im laufenden Lauf
-        $this->RegisterAttributeString('WaterRunAccum', '{}');   // je logischer Zone: Verbrauch (Liter) des aktuellen/letzten Laufs
-        $this->RegisterAttributeString('WaterZoneTotal', '{}');  // je logischer Zone: Verbrauch (Liter) gesamt
-        $this->RegisterAttributeFloat('WaterGlobalTotal', 0);    // Verbrauch (Liter) gesamt über alle Zonen
+        $this->RegisterAttributeFloat('WaterRunAccum', 0);       // Verbrauch (Liter) der aktuellen/letzten Sequenz bzw. manuellen Aktion (Summe über alle beteiligten Kreise)
+        $this->RegisterAttributeFloat('WaterGlobalTotal', 0);    // Verbrauch (Liter) gesamt über alle Zonen und alle Läufe
+        $this->RegisterAttributeInteger('WaterLastSample', 0);   // Unix-Zeit der letzten Verbrauchs-Probe
+        $this->RegisterAttributeInteger('WaterLastValveEvent', 0); // Unix-Zeit des letzten Ventil-Öffnen-Ereignisses (steuert 1s/10s-Takt)
 
         // ------------------------------------------------------------------
         // Variablenprofile
@@ -150,6 +150,7 @@ class Bewaesserungssteuerung extends IPSModule
         // ------------------------------------------------------------------
         $this->RegisterTimer('Queue', 0, 'BWS_ProcessQueue($_IPS[\'TARGET\']);');
         $this->RegisterTimer('Schedule', 0, 'BWS_CheckSchedule($_IPS[\'TARGET\']);');
+        $this->RegisterTimer('WaterSample', 0, 'BWS_SampleWater($_IPS[\'TARGET\']);');
     }
 
     public function Destroy()
@@ -331,23 +332,26 @@ class Bewaesserungssteuerung extends IPSModule
 
             $this->maintainStatVariable('ZRunDay' . $i, $name . ' – Laufzeit heute', VARIABLETYPE_INTEGER, 'BWS.Minutes', 400 + $i, $used, $statsCategoryID);
             $this->maintainStatVariable('ZRunTotal' . $i, $name . ' – Laufzeit gesamt', VARIABLETYPE_FLOAT, 'BWS.Hours', 500 + $i, $used, $statsCategoryID);
-            $this->maintainStatVariable('ZWaterLast' . $i, $name . ' – Wasserverbrauch letzte Laufzeit', VARIABLETYPE_FLOAT, 'BWS.Liters', 600 + $i, $used, $statsCategoryID);
-            $this->maintainStatVariable('ZWaterTotal' . $i, $name . ' – Wasserverbrauch gesamt', VARIABLETYPE_FLOAT, 'BWS.Liters', 700 + $i, $used, $statsCategoryID);
         }
 
         // ------------------------------------------------------------------
-        // Laufzeitanzeige (Pumpe gesamt) (-> Statistik)
+        // Laufzeitanzeige (Pumpe gesamt) und Wasserverbrauch (-> Statistik).
+        // Wasserverbrauch bewusst NICHT pro Zone, sondern als zwei
+        // Summenwerte: "letzte Laufzeit" (alle Kreise der zuletzt
+        // abgeschlossenen Sequenz bzw. manuellen Aktion zusammen) und
+        // "gesamt" (alles seit je her), siehe SampleWater()/setPump().
         // ------------------------------------------------------------------
         $this->maintainStatVariable('RuntimeDay', 'Pumpenlaufzeit heute', VARIABLETYPE_INTEGER, 'BWS.Minutes', 300, true, $statsCategoryID);
         $this->maintainStatVariable('RuntimeTotal', 'Pumpenlaufzeit gesamt', VARIABLETYPE_FLOAT, 'BWS.Hours', 310, true, $statsCategoryID);
-        $this->maintainStatVariable('WaterTotal', 'Wasserverbrauch gesamt', VARIABLETYPE_FLOAT, 'BWS.Liters', 320, true, $statsCategoryID);
+        $this->maintainStatVariable('WaterLastRun', 'Wasserverbrauch letzte Laufzeit', VARIABLETYPE_FLOAT, 'BWS.Liters', 320, true, $statsCategoryID);
+        $this->maintainStatVariable('WaterTotal', 'Wasserverbrauch gesamt', VARIABLETYPE_FLOAT, 'BWS.Liters', 330, true, $statsCategoryID);
 
         // Zeitplan-Prüfung alle 10 Sekunden (auch Grundlage für die
         // Auto-Abschaltung manuell gestarteter Zonen, s. checkManualDeadlines)
         $this->SetTimerInterval('Schedule', 10000);
         $this->updateRuntimeDisplay();
         $this->updateAllZoneRuntimeDisplays();
-        $this->updateAllWaterDisplays();
+        $this->updateWaterDisplay();
         $this->updateSensorDisplays();
         $this->updateRemainingDisplay();
         $this->updateNextRunDisplays();
@@ -708,8 +712,10 @@ class Bewaesserungssteuerung extends IPSModule
         $this->WriteAttributeString('ZoneDayAccum', '{}');
         $this->WriteAttributeString('ZoneTotalAccum', '{}');
 
-        // Wasserverbrauch (Gesamtsummen) zurücksetzen
-        $this->WriteAttributeString('WaterZoneTotal', '{}');
+        // Wasserverbrauch (Gesamtsumme) zurücksetzen; der Verbrauch der
+        // aktuellen/letzten Session ("letzte Laufzeit") bleibt unangetastet,
+        // da er sich beim nächsten Sequenz-/manuellen Start ohnehin
+        // automatisch zurücksetzt (siehe setPump()).
         $this->WriteAttributeFloat('WaterGlobalTotal', 0);
 
         for ($i = 0; $i < self::MAX_ZONES; $i++) {
@@ -720,7 +726,7 @@ class Bewaesserungssteuerung extends IPSModule
         }
         $this->updateRuntimeDisplay();
         $this->updateAllZoneRuntimeDisplays();
-        $this->updateAllWaterDisplays();
+        $this->updateWaterDisplay();
     }
 
     /**
@@ -754,7 +760,6 @@ class Bewaesserungssteuerung extends IPSModule
         }
         $this->updateRuntimeDisplay();
         $this->updateAllZoneRuntimeDisplays();
-        $this->sampleWaterUsage();
         $this->updateSensorDisplays();
         $this->checkManualDeadlines();
         $this->updateRemainingDisplay();
@@ -1131,6 +1136,7 @@ class Bewaesserungssteuerung extends IPSModule
 
         $openMembers = $this->zoneOpenMembers($idx);
         $prevCount = count($openMembers);
+        $anyNewlyOpened = false;
         foreach ($targets as $t) {
             if (!isset($valves[$t])) {
                 continue;
@@ -1139,6 +1145,7 @@ class Bewaesserungssteuerung extends IPSModule
             if ($state) {
                 if (!in_array($t, $openMembers, true)) {
                     $openMembers[] = $t;
+                    $anyNewlyOpened = true;
                     // Zyklenzähler: jedes Öffnen = 1 Zyklus des betroffenen physischen Kugelhahns
                     $p = $valves[$t]['physIdx'];
                     $cyclesID = $this->statVarID('CyclesP' . $p);
@@ -1149,6 +1156,11 @@ class Bewaesserungssteuerung extends IPSModule
             } else {
                 $openMembers = array_values(array_diff($openMembers, [$t]));
             }
+        }
+        if ($anyNewlyOpened) {
+            // Steuert den Wasserverbrauchs-Sampling-Takt: 1 s für die ersten
+            // 20 s nach diesem Ventil-Ereignis, danach 10 s (siehe SampleWater()).
+            $this->noteValveOpened();
         }
         $this->setZoneOpenMembers($idx, $openMembers);
         $newCount = count($openMembers);
@@ -1280,6 +1292,12 @@ class Bewaesserungssteuerung extends IPSModule
             $this->knxSwitch($instanceID, true);
             if ($this->ReadAttributeInteger('PumpOnSince') === 0) {
                 $this->WriteAttributeInteger('PumpOnSince', time());
+                // Neue Bewässerungs-Session (Sequenz oder manuelle Steuerung)
+                // beginnt: Verbrauchssumme dieser Session auf 0 zurücksetzen,
+                // damit "Wasserverbrauch letzte Laufzeit" nur diesen Lauf zeigt.
+                $this->WriteAttributeFloat('WaterRunAccum', 0);
+                $this->WriteAttributeInteger('WaterLastSample', 0);
+                $this->updateWaterDisplay();
                 // Für alle bereits offenen Zonen beginnt jetzt die tatsächliche Bewässerung
                 foreach ($this->openList() as $i) {
                     $this->startZoneRuntime($i);
@@ -1535,18 +1553,6 @@ class Bewaesserungssteuerung extends IPSModule
     {
         if ($this->zoneRunSince($idx) === 0) {
             $this->setZoneRunSince($idx, time());
-
-            // Neuer Bewässerungslauf beginnt: Verbrauch dieses Laufs auf 0
-            // zurücksetzen (die Probenzeit wird gelöscht, damit
-            // sampleWaterUsage() beim nächsten Tick wieder bei 0 startet und
-            // die erste Probe frühestens 20 s nach dieser Zeit nimmt).
-            $run = json_decode($this->ReadAttributeString('WaterRunAccum'), true) ?: [];
-            $run[(string)$idx] = 0;
-            $this->WriteAttributeString('WaterRunAccum', json_encode($run));
-            $sample = json_decode($this->ReadAttributeString('WaterRunSample'), true) ?: [];
-            unset($sample[(string)$idx]);
-            $this->WriteAttributeString('WaterRunSample', json_encode($sample));
-            $this->updateWaterDisplay($idx);
         }
     }
 
@@ -1586,120 +1592,80 @@ class Bewaesserungssteuerung extends IPSModule
     }
 
     // ------------------------------------------------------------------
-    // Wasserverbrauch je Zone und gesamt: berechnet aus Durchfluss (l/min)
-    // × Zeit. Erste Probe frühestens 20 s nach Beginn der aktiven
-    // Bewässerung einer Zone (Verfahrzeit + Anlaufzeit des Durchflusses),
-    // danach alle 10 s (Takt von CheckSchedule) – gilt gleichermaßen für
-    // manuell geöffnete Zonen und Zonen innerhalb einer Automatik-Sequenz,
-    // da beide dieselbe Open-Liste/zoneRunSince-Buchführung nutzen.
+    // Wasserverbrauch: EINE Summe für den aktuellen/letzten Lauf (Sequenz
+    // oder manuelle Aktion, über alle daran beteiligten Kreise) und EINE
+    // Gesamtsumme über alle Läufe. Berechnet aus Durchfluss (l/min) × Zeit
+    // über einen eigenen, adaptiven Timer ("WaterSample"): läuft ein
+    // Ventil-Öffnen-Ereignis weniger als 20 s zurück, wird sekündlich
+    // gesampelt, sonst alle 10 s. Das gilt gleichermaßen für manuell
+    // geöffnete Zonen und für Zonen innerhalb einer Automatik-Sequenz
+    // (inkl. "Rasen"-Kette), da jedes Ventil-Öffnen (auch beim
+    // Sequenz-Übergang) den Timer erneut auf den 1-Sekunden-Takt setzt.
     // ------------------------------------------------------------------
 
     /**
-     * Nimmt bei Bedarf eine Verbrauchs-Probe für jede aktuell aktiv
-     * bewässernde Zone. Ohne konfigurierten Durchflusssensor passiert
-     * nichts. Sind mehrere Zonen gleichzeitig offen (Überlapp/„Parallel"-
-     * Kopplung), wird der gemessene Gesamtdurchfluss gleichmäßig auf die
-     * gerade offenen Zonen aufgeteilt, da ein einzelner Durchflusssensor
-     * den Gesamtfluss der Anlage misst, nicht je Zone getrennt.
+     * Timer-Callback: nimmt bei Bedarf eine Verbrauchs-Probe (Durchfluss ×
+     * seit der letzten Probe vergangene Zeit) und bestimmt den nächsten
+     * Timer-Takt selbst (1 s, solange ein Ventil-Ereignis < 20 s zurückliegt,
+     * sonst 10 s; 0/aus, sobald keine Zone mehr offen ist).
      */
-    private function sampleWaterUsage(): void
+    public function SampleWater(): void
     {
         $open = $this->openList();
         if (count($open) === 0) {
-            return;
-        }
-        $flowID = $this->ReadPropertyInteger('FlowSensorID');
-        if ($flowID <= 0 || !IPS_VariableExists($flowID)) {
-            return;
-        }
-        $flowLPerMin = (float)GetValue($flowID);
-        if ($flowLPerMin <= 0) {
+            $this->SetTimerInterval('WaterSample', 0);
             return;
         }
 
         $now = time();
-        $shareCount = max(1, count($open));
-        $sampleSince = json_decode($this->ReadAttributeString('WaterRunSample'), true) ?: [];
-        $changed = false;
+        $lastSample = $this->ReadAttributeInteger('WaterLastSample');
+        $interval = $lastSample > 0 ? ($now - $lastSample) : 0;
 
-        foreach ($open as $idx) {
-            $startedAt = $this->zoneRunSince($idx);
-            if ($startedAt === 0) {
-                continue; // wartet noch auf Verfahrzeit/Pumpe, fließt noch nicht
-            }
-            $elapsedSinceStart = $now - $startedAt;
-            if ($elapsedSinceStart < 20) {
-                continue; // erste Probe erst ab 20 s nach Beginn
-            }
-
-            $last = (int)($sampleSince[(string)$idx] ?? 0);
-            if ($last === 0) {
-                // Erste Probe dieses Laufs: deckt die gesamte bisherige Zeit
-                // seit Beginn ab (typ. ~20 s, je nach Tick-Phase auch mehr).
-                $interval = $elapsedSinceStart;
-            } else {
-                if (($now - $last) < 10) {
-                    continue; // noch nicht wieder fällig
+        if ($interval > 0) {
+            $flowID = $this->ReadPropertyInteger('FlowSensorID');
+            if ($flowID > 0 && IPS_VariableExists($flowID)) {
+                $flowLPerMin = (float)GetValue($flowID);
+                if ($flowLPerMin > 0) {
+                    $liters = ($flowLPerMin / 60) * $interval;
+                    $this->WriteAttributeFloat('WaterRunAccum', $this->ReadAttributeFloat('WaterRunAccum') + $liters);
+                    $this->WriteAttributeFloat('WaterGlobalTotal', $this->ReadAttributeFloat('WaterGlobalTotal') + $liters);
+                    $this->updateWaterDisplay();
                 }
-                $interval = $now - $last;
             }
-            $sampleSince[(string)$idx] = $now;
-            $changed = true;
-
-            $liters = ($flowLPerMin / 60) * $interval / $shareCount;
-            $this->addZoneWater($idx, $liters);
         }
+        $this->WriteAttributeInteger('WaterLastSample', $now);
 
-        if ($changed) {
-            $this->WriteAttributeString('WaterRunSample', json_encode($sampleSince));
-        }
+        // Takt selbst bestimmen: In den ersten 20 s nach einem Ventil-Öffnen
+        // schwankt der Durchfluss noch (Einschwingphase des Motorkugelhahns),
+        // daher sekündlich messen, um den schwankenden Verbrauch genau zu
+        // erfassen. Danach ist der Durchfluss stabil -> 10-s-Takt genügt und
+        // spart Rechenlast. Jede Probe rechnet Durchfluss × tatsächlich
+        // vergangene Zeit, beide Takte liefern also dieselbe Summe.
+        $sinceValveEvent = $now - $this->ReadAttributeInteger('WaterLastValveEvent');
+        $this->SetTimerInterval('WaterSample', ($sinceValveEvent < 20 ? 1 : 10) * 1000);
     }
 
-    private function addZoneWater(int $idx, float $liters): void
+    /**
+     * Wird bei jedem Ventil-Öffnen aufgerufen (siehe setValve()): merkt sich
+     * den Zeitpunkt (steuert den 1s/10s-Takt von SampleWater) und startet
+     * den Sampling-Timer, falls er noch nicht läuft.
+     */
+    private function noteValveOpened(): void
     {
-        $run = json_decode($this->ReadAttributeString('WaterRunAccum'), true) ?: [];
-        $run[(string)$idx] = (float)($run[(string)$idx] ?? 0) + $liters;
-        $this->WriteAttributeString('WaterRunAccum', json_encode($run));
-
-        $total = json_decode($this->ReadAttributeString('WaterZoneTotal'), true) ?: [];
-        $total[(string)$idx] = (float)($total[(string)$idx] ?? 0) + $liters;
-        $this->WriteAttributeString('WaterZoneTotal', json_encode($total));
-
-        $this->WriteAttributeFloat('WaterGlobalTotal', $this->ReadAttributeFloat('WaterGlobalTotal') + $liters);
-
-        $this->updateWaterDisplay($idx);
-        $this->updateGlobalWaterDisplay();
+        $this->WriteAttributeInteger('WaterLastValveEvent', time());
+        $this->SetTimerInterval('WaterSample', 1000);
     }
 
-    private function updateWaterDisplay(int $idx): void
+    private function updateWaterDisplay(): void
     {
-        $run = json_decode($this->ReadAttributeString('WaterRunAccum'), true) ?: [];
-        $lastID = $this->statVarID('ZWaterLast' . $idx);
+        $lastID = $this->statVarID('WaterLastRun');
         if ($lastID > 0) {
-            SetValue($lastID, round((float)($run[(string)$idx] ?? 0), 2));
+            SetValue($lastID, round($this->ReadAttributeFloat('WaterRunAccum'), 2));
         }
-
-        $total = json_decode($this->ReadAttributeString('WaterZoneTotal'), true) ?: [];
-        $totalID = $this->statVarID('ZWaterTotal' . $idx);
+        $totalID = $this->statVarID('WaterTotal');
         if ($totalID > 0) {
-            SetValue($totalID, round((float)($total[(string)$idx] ?? 0), 2));
+            SetValue($totalID, round($this->ReadAttributeFloat('WaterGlobalTotal'), 2));
         }
-    }
-
-    private function updateGlobalWaterDisplay(): void
-    {
-        $id = $this->statVarID('WaterTotal');
-        if ($id > 0) {
-            SetValue($id, round($this->ReadAttributeFloat('WaterGlobalTotal'), 2));
-        }
-    }
-
-    private function updateAllWaterDisplays(): void
-    {
-        for ($i = 0; $i < self::MAX_ZONES; $i++) {
-            $this->updateWaterDisplay($i);
-        }
-        $this->updateGlobalWaterDisplay();
     }
 
     /**
