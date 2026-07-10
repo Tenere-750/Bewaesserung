@@ -75,12 +75,6 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
 - Zonenwechsel in der Sequenz: **Ventil n+1 auf → 10 s Überlapp → Ventil n zu**
   (die Pumpe läuft dabei durch, sie arbeitet nie gegen komplett geschlossene Ventile)
 - Pumpenlaufzeit **heute** (Minuten) und **gesamt** (Stunden) im WebFront
-- **Laufzeit je Kreis** (heute in Minuten, gesamt in Stunden): gezählt wird
-  die Zeit, in der die Pumpe läuft **und** die jeweilige Zone offen ist –
-  also die tatsächliche Bewässerungszeit, nicht die reine Ventil-Offen-Zeit
-  inklusive Verfahrzeiten. Bei „Rasen" wird die Laufzeit als Ganzes für
-  den zusammengelegten Kreis erfasst (inklusive der kurzen Überlapp-Zeit
-  beim Wechsel zwischen den Teilflächen).
 - **Wasserverbrauch** (Liter): Summe der letzten Sequenz/manuellen
   Bewässerung sowie Gesamtsumme über alle Läufe — berechnet aus
   Durchfluss × Zeit, sekündlich für 20 s nach jedem Ventil-Öffnen, danach
@@ -202,7 +196,6 @@ getrennt.
 | Variable | Funktion |
 |---|---|
 | Pumpenlaufzeit heute/gesamt | wird live aktualisiert |
-| „…" – Laufzeit heute/gesamt | je Kreis, tatsächliche Bewässerungszeit (Pumpe an + Ventil offen) |
 | Zyklen Kugelhahn | Öffnungszyklen je physischem Ventil (auch innerhalb „Rasen" getrennt) |
 | Wasserverbrauch letzte Laufzeit | Summe über alle Kreise der letzten Sequenz bzw. manuellen Bewässerung (Liter); zählt live mit, solange bewässert wird |
 | Wasserverbrauch gesamt | Summe über alle Kreise und alle Laufzeiten (Liter) |

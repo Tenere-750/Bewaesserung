@@ -87,9 +87,7 @@ class Bewaesserungssteuerung extends IPSModule
         $this->RegisterAttributeString('LastRun', '{}');    // letzter Bewässerungstag je Sequenz/logischer Zone
         $this->RegisterAttributeString('Open', '[]');       // aktuell geöffnete logische Zonen (Indizes)
         $this->RegisterAttributeString('OpenMembers', '{}'); // je logischer Zone: aktuell offene Teilventile (für "Rasen")
-        $this->RegisterAttributeString('ZoneRunSince', '{}');   // je logischer Zone: Unix-Zeit, seit wann sie aktiv bewässert (Pumpe an + Ventil offen)
-        $this->RegisterAttributeString('ZoneDayAccum', '{}');   // je logischer Zone: Laufzeit heute in Sekunden
-        $this->RegisterAttributeString('ZoneTotalAccum', '{}'); // je logischer Zone: Laufzeit gesamt in Sekunden
+        $this->RegisterAttributeString('ZoneRunSince', '{}');   // je logischer Zone: Unix-Zeit, seit wann sie aktiv bewässert (für Auto-Abschaltung manueller Läufe)
         $this->RegisterAttributeString('ZoneManualTarget', '{}'); // je logischer Zone: gewünschte manuelle Bewässerungsdauer in Sekunden (0/fehlt = kein Auto-Timer aktiv)
         $this->RegisterAttributeFloat('WaterRunAccum', 0);       // Verbrauch (Liter) der aktuellen/letzten Sequenz bzw. manuellen Aktion (Summe über alle beteiligten Kreise)
         $this->RegisterAttributeFloat('WaterGlobalTotal', 0);    // Verbrauch (Liter) gesamt über alle Zonen und alle Läufe
@@ -328,8 +326,10 @@ class Bewaesserungssteuerung extends IPSModule
             // Nächste geplante Laufzeit (reine Anzeige, siehe updateNextRunDisplays())
             $this->maintainCatVariable($planCategoryID, 'NextRunZ' . $i, $name, VARIABLETYPE_STRING, '', 60 + $i, $used, false);
 
-            $this->maintainStatVariable('ZRunDay' . $i, $name . ' – Laufzeit heute', VARIABLETYPE_INTEGER, 'BWS.Minutes', 400 + $i, $used, $statsCategoryID);
-            $this->maintainStatVariable('ZRunTotal' . $i, $name . ' – Laufzeit gesamt', VARIABLETYPE_FLOAT, 'BWS.Hours', 500 + $i, $used, $statsCategoryID);
+            // Laufzeit je Kreis wird nicht mehr angezeigt – etwaige aus
+            // früheren Versionen vorhandene Variablen gezielt entfernen.
+            $this->maintainStatVariable('ZRunDay' . $i, '', VARIABLETYPE_INTEGER, 'BWS.Minutes', 400 + $i, false, $statsCategoryID);
+            $this->maintainStatVariable('ZRunTotal' . $i, '', VARIABLETYPE_FLOAT, 'BWS.Hours', 500 + $i, false, $statsCategoryID);
         }
 
         // ------------------------------------------------------------------
@@ -348,7 +348,6 @@ class Bewaesserungssteuerung extends IPSModule
         // Auto-Abschaltung manuell gestarteter Zonen, s. checkManualDeadlines)
         $this->SetTimerInterval('Schedule', 10000);
         $this->updateRuntimeDisplay();
-        $this->updateAllZoneRuntimeDisplays();
         $this->updateWaterDisplay();
         $this->updateSensorDisplays();
         $this->updateRemainingDisplay();
@@ -688,9 +687,9 @@ class Bewaesserungssteuerung extends IPSModule
     }
 
     /**
-     * Setzt Pumpenlaufzeiten, Zonenlaufzeiten, Wasserverbrauch (gesamt) und
-     * Zyklenzähler zurück. Der Verbrauch des gerade laufenden Bewässerungs-
-     * laufs ("letzte Laufzeit") bleibt erhalten, da er sich beim nächsten
+     * Setzt Pumpenlaufzeit, Wasserverbrauch (gesamt) und Zyklenzähler
+     * zurück. Der Verbrauch des gerade laufenden Bewässerungslaufs
+     * ("letzte Laufzeit") bleibt erhalten, da er sich beim nächsten
      * Zonenstart ohnehin automatisch zurücksetzt.
      */
     public function ResetCounters(): void
@@ -700,15 +699,6 @@ class Bewaesserungssteuerung extends IPSModule
         if ($this->ReadAttributeInteger('PumpOnSince') > 0) {
             $this->WriteAttributeInteger('PumpOnSince', time());
         }
-
-        // Zonenlaufzeiten zurücksetzen; aktuell laufende Zonen zählen ab jetzt neu
-        $zoneRunSinceAll = json_decode($this->ReadAttributeString('ZoneRunSince'), true) ?: [];
-        foreach ($zoneRunSinceAll as $idxStr => $ts) {
-            $zoneRunSinceAll[$idxStr] = time();
-        }
-        $this->WriteAttributeString('ZoneRunSince', json_encode($zoneRunSinceAll));
-        $this->WriteAttributeString('ZoneDayAccum', '{}');
-        $this->WriteAttributeString('ZoneTotalAccum', '{}');
 
         // Wasserverbrauch (Gesamtsumme) zurücksetzen; der Verbrauch der
         // aktuellen/letzten Session ("letzte Laufzeit") bleibt unangetastet,
@@ -723,7 +713,6 @@ class Bewaesserungssteuerung extends IPSModule
             }
         }
         $this->updateRuntimeDisplay();
-        $this->updateAllZoneRuntimeDisplays();
         $this->updateWaterDisplay();
     }
 
@@ -745,19 +734,9 @@ class Bewaesserungssteuerung extends IPSModule
             }
             $this->WriteAttributeInteger('DayAccum', 0);
 
-            // Gleiches für alle gerade aktiv bewässernden Zonen
-            $zoneRunSinceAll = json_decode($this->ReadAttributeString('ZoneRunSince'), true) ?: [];
-            foreach ($zoneRunSinceAll as $idxStr => $ts) {
-                $this->addZoneTotalAccum((int)$idxStr, time() - (int)$ts);
-                $zoneRunSinceAll[$idxStr] = time();
-            }
-            $this->WriteAttributeString('ZoneRunSince', json_encode($zoneRunSinceAll));
-            $this->WriteAttributeString('ZoneDayAccum', '{}');
-
             $this->WriteAttributeString('DayDate', $today);
         }
         $this->updateRuntimeDisplay();
-        $this->updateAllZoneRuntimeDisplays();
         $this->updateSensorDisplays();
         $this->checkManualDeadlines();
         $this->updateRemainingDisplay();
@@ -1500,8 +1479,12 @@ class Bewaesserungssteuerung extends IPSModule
     }
 
     // ------------------------------------------------------------------
-    // Laufzeit je logischer Zone (Kreis): zählt die Zeit, in der die Pumpe
-    // läuft UND die jeweilige Zone offen ist (tatsächliche Bewässerungszeit).
+    // Zonen-Laufzeit-Merker: Zeitpunkt, seit dem eine logische Zone aktiv
+    // bewässert (Pumpe an UND Ventil offen). Wird für die Auto-Abschaltung
+    // manuell gestarteter Zonen nach Ablauf der eingestellten Dauer
+    // benötigt (siehe checkManualDeadlines()). Eine Statistik-Anzeige der
+    // Laufzeit je Kreis gibt es bewusst nicht (nur Pumpenlaufzeit gesamt
+    // und Wasserverbrauch werden ausgewiesen).
     // ------------------------------------------------------------------
 
     private function zoneRunSince(int $idx): int
@@ -1521,32 +1504,6 @@ class Bewaesserungssteuerung extends IPSModule
         $this->WriteAttributeString('ZoneRunSince', json_encode($all));
     }
 
-    private function zoneDayAccum(int $idx): int
-    {
-        $all = json_decode($this->ReadAttributeString('ZoneDayAccum'), true) ?: [];
-        return (int)($all[(string)$idx] ?? 0);
-    }
-
-    private function addZoneDayAccum(int $idx, int $delta): void
-    {
-        $all = json_decode($this->ReadAttributeString('ZoneDayAccum'), true) ?: [];
-        $all[(string)$idx] = (int)($all[(string)$idx] ?? 0) + $delta;
-        $this->WriteAttributeString('ZoneDayAccum', json_encode($all));
-    }
-
-    private function zoneTotalAccum(int $idx): int
-    {
-        $all = json_decode($this->ReadAttributeString('ZoneTotalAccum'), true) ?: [];
-        return (int)($all[(string)$idx] ?? 0);
-    }
-
-    private function addZoneTotalAccum(int $idx, int $delta): void
-    {
-        $all = json_decode($this->ReadAttributeString('ZoneTotalAccum'), true) ?: [];
-        $all[(string)$idx] = (int)($all[(string)$idx] ?? 0) + $delta;
-        $this->WriteAttributeString('ZoneTotalAccum', json_encode($all));
-    }
-
     private function startZoneRuntime(int $idx): void
     {
         if ($this->zoneRunSince($idx) === 0) {
@@ -1556,37 +1513,7 @@ class Bewaesserungssteuerung extends IPSModule
 
     private function stopZoneRuntime(int $idx): void
     {
-        $since = $this->zoneRunSince($idx);
-        if ($since > 0) {
-            $delta = time() - $since;
-            $this->addZoneDayAccum($idx, $delta);
-            $this->addZoneTotalAccum($idx, $delta);
-            $this->setZoneRunSince($idx, 0);
-        }
-        $this->updateZoneRuntimeDisplay($idx);
-    }
-
-    private function updateZoneRuntimeDisplay(int $idx): void
-    {
-        $since = $this->zoneRunSince($idx);
-        $running = $since > 0 ? time() - $since : 0;
-        $day = $this->zoneDayAccum($idx) + $running;
-        $total = $this->zoneTotalAccum($idx) + $running;
-        $dayID = $this->statVarID('ZRunDay' . $idx);
-        if ($dayID > 0) {
-            SetValue($dayID, (int)round($day / 60));
-        }
-        $totalID = $this->statVarID('ZRunTotal' . $idx);
-        if ($totalID > 0) {
-            SetValue($totalID, round($total / 3600, 2));
-        }
-    }
-
-    private function updateAllZoneRuntimeDisplays(): void
-    {
-        for ($i = 0; $i < self::MAX_ZONES; $i++) {
-            $this->updateZoneRuntimeDisplay($i);
-        }
+        $this->setZoneRunSince($idx, 0);
     }
 
     // ------------------------------------------------------------------
