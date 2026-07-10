@@ -372,6 +372,44 @@ Zustands trifft. Das behebt strukturell das zuvor beobachtete Verhalten
 einmal aus dem JSON geparst (Cache) statt bei jedem einzelnen
 Schaltschritt erneut.
 
+## Neu in Version 3.0
+
+**Pumpen-Watchdog (Reaktion auf "Sequenz lief, Pumpe aber nicht"):**
+Solange laut interner Buchführung bewässert wird, überwacht ein Watchdog
+im 10-Sekunden-Takt den Pumpenzustand: Meldet die (optionale)
+Rückmeldevariable "aus", obwohl die Pumpe seit über 15 Sekunden laufen
+müsste, wird der Einschaltbefehl sofort erneut gesendet und eine Warnung
+protokolliert. Zusätzlich wird der Einschaltbefehl während der Bewässerung
+vorsorglich einmal pro Minute wiederholt — bei laufender Pumpe wirkungslos,
+fängt aber ein verlorenes KNX-Telegramm auch ohne Rückmeldevariable ab.
+Falls das Verhalten erneut auftritt: bitte den Meldungsfenster-Auszug rund
+um den Startzeitpunkt notieren (Einträge "Pumpe AN/AUS" und Watchdog-
+Warnungen zeigen exakt, was passiert ist).
+
+**Nächste Laufzeiten je Kreis:** Neue Unterkategorie "Nächste Laufzeiten"
+(im WebFront oberhalb der Zonen-Schalter) mit einer Zeile pro Kreis, z. B.
+"heute, 19:00 (Abends)" oder "Freitag, 06:00 (Morgens)". Berechnet aus
+Intervall, letztem Lauf und den Startzeiten der aktivierten Sequenzen —
+also der spätestmögliche nächste Termin; ein Bodenfeuchtesensor kann die
+Zone an dem Tag weiterhin überspringen (nicht vorhersagbar). Deaktivierte
+Automatik-Sequenzen werden nicht berücksichtigt; ohne aktiven
+Sequenz-Eintrag zeigt der Kreis "–".
+
+**Frei wählbare Sequenznamen:** Im Instanz-Editor lassen sich beide
+Sequenzen benennen (z. B. "Morgens"/"Abends"). Der Name erscheint überall:
+auf den Auswahl-Buttons im WebFront, bei "Startzeit …"/"Automatik …", in
+den Status-Texten, in der Nächste-Laufzeit-Anzeige, in den Panel-
+Überschriften und Buttons des Instanz-Editors. Technisch nutzt die
+Sequenz-Auswahl dafür ein instanzspezifisches Variablenprofil, das beim
+Löschen der Instanz automatisch mit entfernt wird.
+
+**Manuelle Laufzeiten gruppiert:** Die Dauer-Felder liegen jetzt in einer
+eigenen Unterkategorie "Manuelle Laufzeit" und tragen nur noch den
+Zonennamen — im WebFront also genau die gewünschte Darstellung
+(Überschrift "Manuelle Laufzeit", darunter Buchenhecke, Ölweide, Rasen, …).
+Bestehende Werte werden beim ersten Übernehmen automatisch aus den alten
+Variablen übernommen (Migration), die alten Variablen werden entfernt.
+
 ## Bekannte Annahmen / Grenzen
 
 - Es wird angenommen, dass jede zu schaltende Gruppenadresse als eigene

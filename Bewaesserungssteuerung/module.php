@@ -72,6 +72,8 @@ class Bewaesserungssteuerung extends IPSModule
 
         $this->RegisterPropertyString('Sequence1', '[]');   // [{Zone, Duration, Interval, Parallel, Active}]
         $this->RegisterPropertyString('Sequence2', '[]');
+        $this->RegisterPropertyString('Seq1Name', 'Sequenz 1');
+        $this->RegisterPropertyString('Seq2Name', 'Sequenz 2');
         $this->RegisterPropertyInteger('MaxParallel', 2);
         $this->RegisterPropertyInteger('OverlapTime', 10);
 
@@ -141,6 +143,20 @@ class Bewaesserungssteuerung extends IPSModule
         $this->RegisterTimer('Schedule', 0, 'BWS_CheckSchedule($_IPS[\'TARGET\']);');
     }
 
+    public function Destroy()
+    {
+        parent::Destroy();
+
+        // Instanzspezifisches SeqControl-Profil beim endgültigen Löschen der
+        // Instanz mit entfernen (bei Neustarts existiert die Instanz noch).
+        if (!IPS_InstanceExists($this->InstanceID)) {
+            $profile = 'BWS.SeqCtrl' . $this->InstanceID;
+            if (IPS_VariableProfileExists($profile)) {
+                IPS_DeleteVariableProfile($profile);
+            }
+        }
+    }
+
     public function ApplyChanges()
     {
         parent::ApplyChanges();
@@ -158,8 +174,23 @@ class Bewaesserungssteuerung extends IPSModule
             $this->SetValue('Active', true);
         }
 
-        $this->RegisterVariableInteger('SeqControl', 'Automatik-Sequenz', 'BWS.SeqControl', 20);
+        // Instanzspezifisches Profil für die Sequenz-Auswahl, damit die frei
+        // wählbaren Sequenznamen als Button-Beschriftungen erscheinen.
+        // (Assoziationen werden bei jedem Übernehmen aktualisiert.)
+        $seqProfile = 'BWS.SeqCtrl' . $this->InstanceID;
+        if (!IPS_VariableProfileExists($seqProfile)) {
+            IPS_CreateVariableProfile($seqProfile, VARIABLETYPE_INTEGER);
+            IPS_SetVariableProfileIcon($seqProfile, 'Execute');
+        }
+        IPS_SetVariableProfileAssociation($seqProfile, 0, 'Stopp', '', 0xFF4040);
+        IPS_SetVariableProfileAssociation($seqProfile, 1, $this->seqName(1), '', 0x40A0FF);
+        IPS_SetVariableProfileAssociation($seqProfile, 2, $this->seqName(2), '', 0x4040FF);
+
+        $this->RegisterVariableInteger('SeqControl', 'Automatik-Sequenz', $seqProfile, 20);
         $this->EnableAction('SeqControl');
+        // Bestehende Installationen: Variable kann noch das alte globale
+        // Profil tragen -> explizit auf das instanzspezifische umstellen.
+        IPS_SetVariableCustomProfile($this->GetIDForIdent('SeqControl'), $seqProfile);
 
         $newStatus = @$this->GetIDForIdent('Status') === false;
         $this->RegisterVariableString('Status', 'Status', '', 30);
@@ -189,29 +220,33 @@ class Bewaesserungssteuerung extends IPSModule
         $this->RegisterVariableInteger('Remaining', 'Restlaufzeit', 'BWS.Minutes', 36);
 
         $newST1 = @$this->GetIDForIdent('StartTime1') === false;
-        $this->RegisterVariableInteger('StartTime1', 'Startzeit Sequenz 1 (morgens)', '~UnixTimestampTime', 40);
+        $this->RegisterVariableInteger('StartTime1', 'Startzeit ' . $this->seqName(1), '~UnixTimestampTime', 40);
         $this->EnableAction('StartTime1');
+        IPS_SetName($this->GetIDForIdent('StartTime1'), 'Startzeit ' . $this->seqName(1));
         if ($newST1) {
             $this->SetValue('StartTime1', strtotime('06:00'));
         }
 
         $newA1 = @$this->GetIDForIdent('Auto1') === false;
-        $this->RegisterVariableBoolean('Auto1', 'Automatik Sequenz 1', '~Switch', 45);
+        $this->RegisterVariableBoolean('Auto1', 'Automatik ' . $this->seqName(1), '~Switch', 45);
         $this->EnableAction('Auto1');
+        IPS_SetName($this->GetIDForIdent('Auto1'), 'Automatik ' . $this->seqName(1));
         if ($newA1) {
             $this->SetValue('Auto1', true);
         }
 
         $newST2 = @$this->GetIDForIdent('StartTime2') === false;
-        $this->RegisterVariableInteger('StartTime2', 'Startzeit Sequenz 2 (abends)', '~UnixTimestampTime', 50);
+        $this->RegisterVariableInteger('StartTime2', 'Startzeit ' . $this->seqName(2), '~UnixTimestampTime', 50);
         $this->EnableAction('StartTime2');
+        IPS_SetName($this->GetIDForIdent('StartTime2'), 'Startzeit ' . $this->seqName(2));
         if ($newST2) {
             $this->SetValue('StartTime2', strtotime('19:00'));
         }
 
         $newA2 = @$this->GetIDForIdent('Auto2') === false;
-        $this->RegisterVariableBoolean('Auto2', 'Automatik Sequenz 2', '~Switch', 55);
+        $this->RegisterVariableBoolean('Auto2', 'Automatik ' . $this->seqName(2), '~Switch', 55);
         $this->EnableAction('Auto2');
+        IPS_SetName($this->GetIDForIdent('Auto2'), 'Automatik ' . $this->seqName(2));
         if ($newA2) {
             $this->SetValue('Auto2', true);
         }
@@ -232,8 +267,16 @@ class Bewaesserungssteuerung extends IPSModule
         }
 
         // ------------------------------------------------------------------
-        // Manuelle Schalter + Dauer pro logischer Zone (Steuerung, bleibt bei
-        // der Instanz) sowie Laufzeitanzeige je Zone (-> Statistik)
+        // Kategorien: "Manuelle Laufzeit" (editierbare Dauer je Kreis) und
+        // "Nächste Laufzeiten" (Vorschau, wann welche Zone wieder läuft)
+        // ------------------------------------------------------------------
+        $manualDurCategoryID = $this->ensureCategory('ManualDurCategory', 'Manuelle Laufzeit', 150);
+        $planCategoryID = $this->ensureCategory('PlanCategory', 'Nächste Laufzeiten', 60);
+
+        // ------------------------------------------------------------------
+        // Manuelle Schalter pro logischer Zone (Steuerung, direkt bei der
+        // Instanz), Dauer je Kreis (-> "Manuelle Laufzeit"), nächste
+        // Laufzeit (-> "Nächste Laufzeiten"), Laufzeitanzeige (-> Statistik)
         // ------------------------------------------------------------------
         $logical = $this->logicalZones();
         for ($i = 0; $i < self::MAX_ZONES; $i++) {
@@ -250,15 +293,32 @@ class Bewaesserungssteuerung extends IPSModule
                 IPS_SetName($this->GetIDForIdent('ManualZ' . $i), $name);
             }
 
-            $newDur = $used && @$this->GetIDForIdent('ManualDurationZ' . $i) === false;
-            $this->MaintainVariable('ManualDurationZ' . $i, $name . ' – manuelle Dauer', VARIABLETYPE_INTEGER, 'BWS.Minutes', 150 + $i, $used);
+            // Migration aus älteren Versionen: die Dauer-Variable lag früher
+            // als direktes Kind bei der Instanz ("<Zone> – manuelle Dauer").
+            // Wert übernehmen und die alte Variable entfernen, bevor die neue
+            // in der Kategorie gepflegt wird.
+            $migratedValue = null;
+            $oldID = @$this->GetIDForIdent('ManualDurationZ' . $i);
+            if ($oldID !== false) {
+                $migratedValue = (int)GetValue($oldID);
+                $this->UnregisterVariable('ManualDurationZ' . $i);
+            }
+
+            $isNewDur = $used && @IPS_GetObjectIDByIdent('ManualDurationZ' . $i, $manualDurCategoryID) === false;
+            $this->maintainCatVariable($manualDurCategoryID, 'ManualDurationZ' . $i, $name, VARIABLETYPE_INTEGER, 'BWS.Minutes', 150 + $i, $used, true);
             if ($used) {
-                $this->EnableAction('ManualDurationZ' . $i);
-                IPS_SetName($this->GetIDForIdent('ManualDurationZ' . $i), $name . ' – manuelle Dauer');
-                if ($newDur) {
-                    $this->SetValue('ManualDurationZ' . $i, $logical[$i]['defaultDuration']);
+                $durID = $this->catVarID('ManualDurCategory', 'ManualDurationZ' . $i);
+                if ($durID > 0) {
+                    if ($migratedValue !== null && $migratedValue > 0) {
+                        SetValue($durID, $migratedValue);
+                    } elseif ($isNewDur) {
+                        SetValue($durID, $logical[$i]['defaultDuration']);
+                    }
                 }
             }
+
+            // Nächste geplante Laufzeit (reine Anzeige, siehe updateNextRunDisplays())
+            $this->maintainCatVariable($planCategoryID, 'NextRunZ' . $i, $name, VARIABLETYPE_STRING, '', 60 + $i, $used, false);
 
             $this->maintainStatVariable('ZRunDay' . $i, $name . ' – Laufzeit heute', VARIABLETYPE_INTEGER, 'BWS.Minutes', 400 + $i, $used, $statsCategoryID);
             $this->maintainStatVariable('ZRunTotal' . $i, $name . ' – Laufzeit gesamt', VARIABLETYPE_FLOAT, 'BWS.Hours', 500 + $i, $used, $statsCategoryID);
@@ -277,6 +337,7 @@ class Bewaesserungssteuerung extends IPSModule
         $this->updateAllZoneRuntimeDisplays();
         $this->updateSensorDisplays();
         $this->updateRemainingDisplay();
+        $this->updateNextRunDisplays();
     }
 
     /**
@@ -298,14 +359,17 @@ class Bewaesserungssteuerung extends IPSModule
     }
 
     /**
-     * Legt eine Statistik-Variable DIREKT als Kind der Statistik-Kategorie an
-     * (nicht der Instanz) bzw. pflegt sie. WICHTIG: Da diese Variablen nicht
-     * direkte Kinder der Instanz sind, funktionieren $this->GetIDForIdent()
-     * und $this->SetValue() für sie NICHT (die suchen nur direkte Kinder der
-     * Instanz) – Zugriff erfolgt stattdessen über statVarID() plus die
-     * globalen Funktionen SetValue($id, ...) / GetValue($id).
+     * Legt eine Variable DIREKT als Kind einer Kategorie an (nicht der
+     * Instanz) bzw. pflegt sie (Name/Position/Profil werden bei jedem Aufruf
+     * gesetzt). WICHTIG: Da diese Variablen keine direkten Kinder der
+     * Instanz sind, funktionieren $this->GetIDForIdent() und
+     * $this->SetValue() für sie NICHT – Zugriff über catVarID()/statVarID()
+     * plus die globalen Funktionen SetValue($id, ...) / GetValue($id).
+     * Mit $enableAction = true wird die Instanz als Aktionsziel der Variable
+     * eingetragen: Bedienung im WebFront landet dann wie gewohnt in
+     * RequestAction() mit dem Ident der Variable.
      */
-    private function maintainStatVariable(string $ident, string $name, int $type, string $profile, int $position, bool $used, int $categoryID): void
+    private function maintainCatVariable(int $categoryID, string $ident, string $name, int $type, string $profile, int $position, bool $used, bool $enableAction): void
     {
         if ($categoryID <= 0) {
             return;
@@ -329,21 +393,43 @@ class Bewaesserungssteuerung extends IPSModule
         if ($profile !== '') {
             @IPS_SetVariableCustomProfile($id, $profile);
         }
+        if ($enableAction) {
+            @IPS_SetVariableCustomAction($id, $this->InstanceID);
+        }
     }
 
     /**
-     * Löst die Objekt-ID einer Statistik-Variable auf (Kind der
-     * Statistik-Kategorie, siehe maintainStatVariable()). Gibt 0 zurück,
-     * wenn die Kategorie oder die Variable (noch) nicht existiert.
+     * Kompatibilitäts-Wrapper für Statistik-Variablen (reine Anzeigen ohne
+     * Aktion in der Statistik-Kategorie).
      */
-    private function statVarID(string $ident): int
+    private function maintainStatVariable(string $ident, string $name, int $type, string $profile, int $position, bool $used, int $categoryID): void
     {
-        $catID = @$this->GetIDForIdent('StatsCategory');
+        $this->maintainCatVariable($categoryID, $ident, $name, $type, $profile, $position, $used, false);
+    }
+
+    /**
+     * Löst die Objekt-ID einer Variable auf, die als Kind einer per Ident
+     * referenzierten Unterkategorie liegt. Gibt 0 zurück, wenn Kategorie
+     * oder Variable (noch) nicht existieren.
+     */
+    private function catVarID(string $categoryIdent, string $ident): int
+    {
+        $catID = @$this->GetIDForIdent($categoryIdent);
         if ($catID === false) {
             return 0;
         }
         $id = @IPS_GetObjectIDByIdent($ident, $catID);
         return $id === false ? 0 : $id;
+    }
+
+    /**
+     * Löst die Objekt-ID einer Statistik-Variable auf (Kind der
+     * Statistik-Kategorie). Gibt 0 zurück, wenn die Kategorie oder die
+     * Variable (noch) nicht existiert.
+     */
+    private function statVarID(string $ident): int
+    {
+        return $this->catVarID('StatsCategory', $ident);
     }
 
     // ======================================================================
@@ -382,7 +468,12 @@ class Bewaesserungssteuerung extends IPSModule
                 break;
 
             case str_starts_with($Ident, 'ManualDurationZ'):
-                $this->SetValue($Ident, max(1, (int)$Value));
+                // Liegt in der Unterkategorie "Manuelle Laufzeit" -> Zugriff
+                // über die aufgelöste Objekt-ID statt $this->SetValue().
+                $durID = $this->catVarID('ManualDurCategory', $Ident);
+                if ($durID > 0) {
+                    SetValue($durID, max(1, (int)$Value));
+                }
                 break;
 
             default:
@@ -409,6 +500,8 @@ class Bewaesserungssteuerung extends IPSModule
             $this->SetValue('Status', 'Master-Schalter aus – Start abgebrochen');
             return;
         }
+
+        $seqLabel = $this->seqName($Sequence);
 
         $zones = $this->logicalZones();
         $rows = json_decode($this->ReadPropertyString('Sequence' . $Sequence), true) ?: [];
@@ -449,7 +542,7 @@ class Bewaesserungssteuerung extends IPSModule
         }
 
         if (count($due) === 0) {
-            $msg = 'Sequenz ' . $Sequence . ': heute keine Zone fällig';
+            $msg = $seqLabel . ': heute keine Zone fällig';
             if (count($skippedMoist) > 0) {
                 $msg .= ' (Boden feucht genug: ' . implode(', ', $skippedMoist) . ')';
             }
@@ -515,7 +608,7 @@ class Bewaesserungssteuerung extends IPSModule
             if ($k === 0 || $prevWasLawn) {
                 // Frischer Start: nichts ist mehr offen (entweder ganz am Anfang,
                 // oder weil die vorherige "Rasen"-Kette bereits alles geschlossen hat)
-                $steps[] = ['cmd' => 'status', 'param' => 'Sequenz ' . $Sequence . ': öffne ' . $groupName($g)];
+                $steps[] = ['cmd' => 'status', 'param' => $seqLabel . ': öffne ' . $groupName($g)];
                 foreach ($g as $j => $z) {
                     $steps[] = ['cmd' => 'mark', 'param' => 's' . $Sequence . 'z' . $z['idx']];
                     $steps[] = [
@@ -525,7 +618,7 @@ class Bewaesserungssteuerung extends IPSModule
                     ];
                 }
                 $steps[] = ['cmd' => 'pump_on'];
-                $steps[] = ['cmd' => 'status', 'param' => 'Sequenz ' . $Sequence . ': bewässere ' . $groupName($g), 'post' => $groupDur($g)];
+                $steps[] = ['cmd' => 'status', 'param' => $seqLabel . ': bewässere ' . $groupName($g), 'post' => $groupDur($g)];
             } else {
                 // Gruppenwechsel mit Überlapp, dabei nie mehr als 2 Ventile offen
                 // und die Pumpe hat immer mindestens ein offenes Ventil:
@@ -542,14 +635,14 @@ class Bewaesserungssteuerung extends IPSModule
                     $steps[] = ['cmd' => 'mark', 'param' => 's' . $Sequence . 'z' . $g[1]['idx']];
                     $steps[] = ['cmd' => 'valve_on', 'zone' => $g[1]['idx']];
                 }
-                $steps[] = ['cmd' => 'status', 'param' => 'Sequenz ' . $Sequence . ': bewässere ' . $groupName($g), 'post' => max(0, $groupDur($g) - $overlap)];
+                $steps[] = ['cmd' => 'status', 'param' => $seqLabel . ': bewässere ' . $groupName($g), 'post' => max(0, $groupDur($g) - $overlap)];
             }
         }
 
         // Abschluss: Pumpe aus -> Verfahrzeit -> letzte Ventile zu
         // (falls die letzte Gruppe "Rasen" war, ist bereits alles geschlossen)
         $lastGroup = $groups[count($groups) - 1];
-        $steps[] = ['cmd' => 'status', 'param' => 'Sequenz ' . $Sequence . ': beende'];
+        $steps[] = ['cmd' => 'status', 'param' => $seqLabel . ': beende'];
         if (!$isLawnGroup($lastGroup)) {
             $steps[] = ['cmd' => 'pump_off', 'post' => $groupTravel($lastGroup)];
             foreach ($lastGroup as $z) {
@@ -562,7 +655,7 @@ class Bewaesserungssteuerung extends IPSModule
         $this->WriteAttributeString('ZoneManualTarget', '{}');
         $this->SetValue('SeqControl', $Sequence);
         $note = count($skippedMoist) > 0 ? (' (übersprungen wegen Feuchte: ' . implode(', ', $skippedMoist) . ')') : '';
-        $this->LogMessage('Sequenz ' . $Sequence . ' gestartet (' . count($due) . ' Zonen)' . $note, KL_NOTIFY);
+        $this->LogMessage($seqLabel . ' gestartet (' . count($due) . ' Zonen)' . $note, KL_NOTIFY);
         $this->enqueue($steps);
     }
 
@@ -643,6 +736,8 @@ class Bewaesserungssteuerung extends IPSModule
         $this->updateSensorDisplays();
         $this->checkManualDeadlines();
         $this->updateRemainingDisplay();
+        $this->pumpWatchdog();
+        $this->updateNextRunDisplays();
 
         // --- Automatikstart -----------------------------------------------
         if (!$this->GetValue('Active')) {
@@ -753,9 +848,14 @@ class Bewaesserungssteuerung extends IPSModule
             }
 
             // Bewässerungsdauer: das im WebFront direkt editierbare Dauer-Feld
-            // dieser Zone (voreingestellt mit der Standard-Bewässerungsdauer
-            // aus der Konfiguration, dort aber jederzeit anpassbar).
-            $durSeconds = max(1, $this->GetValue('ManualDurationZ' . $idx)) * 60;
+            // dieser Zone (Kategorie "Manuelle Laufzeit"; voreingestellt mit
+            // der Standard-Bewässerungsdauer aus der Konfiguration).
+            $durID = $this->catVarID('ManualDurCategory', 'ManualDurationZ' . $idx);
+            $durMinutes = $durID > 0 ? (int)GetValue($durID) : 0;
+            if ($durMinutes <= 0) {
+                $durMinutes = $zones[$idx]['defaultDuration'];
+            }
+            $durSeconds = max(1, $durMinutes) * 60;
 
             if ($isLawn) {
                 // Eigene, in sich geschlossene Kette mit kurzem Überlapp beim
@@ -1601,6 +1701,132 @@ class Bewaesserungssteuerung extends IPSModule
         }
     }
 
+    /**
+     * Frei wählbarer Anzeigename einer Sequenz (Fallback: "Sequenz N").
+     */
+    private function seqName(int $seq): string
+    {
+        $name = trim($this->ReadPropertyString('Seq' . $seq . 'Name'));
+        return $name !== '' ? $name : ('Sequenz ' . $seq);
+    }
+
+    /**
+     * Pumpen-Watchdog (läuft im 10-s-Takt aus CheckSchedule): Solange laut
+     * interner Buchführung bewässert wird (Pumpe an + mindestens eine Zone
+     * offen), wird der Pumpen-Einschaltbefehl abgesichert:
+     * - Meldet die (optionale) Rückmeldevariable "aus", obwohl die Pumpe
+     *   seit mehr als 15 s laufen müsste, wird der Einschaltbefehl sofort
+     *   erneut gesendet und eine Warnung protokolliert.
+     * - Unabhängig davon wird der Einschaltbefehl vorsorglich einmal pro
+     *   Minute wiederholt (unschädlich bei laufender Pumpe, fängt aber ein
+     *   verlorenes KNX-Telegramm ab, auch ohne Rückmeldevariable).
+     */
+    private function pumpWatchdog(): void
+    {
+        $since = $this->ReadAttributeInteger('PumpOnSince');
+        if ($since === 0 || count($this->openList()) === 0) {
+            $this->SetBuffer('PumpAssert', '');
+            return;
+        }
+
+        $feedbackOff = false;
+        $fbID = $this->ReadPropertyInteger('PumpStatusID');
+        if ($fbID > 0 && IPS_VariableExists($fbID) && (time() - $since) > 15) {
+            $feedbackOff = !(bool)GetValue($fbID);
+        }
+
+        $lastAssert = (int)$this->GetBuffer('PumpAssert');
+        if ($feedbackOff || (time() - $lastAssert) >= 60) {
+            if ($feedbackOff) {
+                $this->LogMessage('Watchdog: Pumpe sollte laufen, Rückmeldung meldet AUS – sende Einschaltbefehl erneut', KL_WARNING);
+            }
+            $this->knxSwitch($this->ReadPropertyInteger('PumpInstanceID'), true);
+            $this->SetBuffer('PumpAssert', (string)time());
+        }
+    }
+
+    /**
+     * Aktualisiert für jede logische Zone die Anzeige "Nächste Laufzeit":
+     * Aus Intervall, letztem Lauf und den Startzeiten beider (aktivierter)
+     * Sequenzen wird der früheste kommende Termin berechnet und lesbar
+     * formatiert (z. B. "heute, 19:00 (Abends)" oder "Freitag, 06:00
+     * (Morgens)"). Zonen ohne aktiven Sequenz-Eintrag zeigen "–".
+     * Bodenfeuchte-Sensoren werden bewusst nicht einbezogen (nicht
+     * vorhersagbar); der Termin ist also "spätestens dann fällig".
+     */
+    private function updateNextRunDisplays(): void
+    {
+        $zones = $this->logicalZones();
+        $lastRun = json_decode($this->ReadAttributeString('LastRun'), true) ?: [];
+
+        for ($i = 0; $i < self::MAX_ZONES; $i++) {
+            $varID = $this->catVarID('PlanCategory', 'NextRunZ' . $i);
+            if ($varID <= 0) {
+                continue;
+            }
+            $text = isset($zones[$i]) ? $this->computeNextRun($i, $lastRun) : '–';
+            if (GetValue($varID) !== $text) {
+                SetValue($varID, $text);
+            }
+        }
+    }
+
+    private function computeNextRun(int $idx, array $lastRun): string
+    {
+        $bestTs = null;
+        $bestSeq = 0;
+
+        foreach ([1, 2] as $seq) {
+            if (!$this->GetValue('Auto' . $seq)) {
+                continue;
+            }
+            $startTs = $this->GetValue('StartTime' . $seq);
+            if ($startTs <= 0) {
+                continue;
+            }
+            $startHM = date('H:i', $startTs);
+
+            $rows = json_decode($this->ReadPropertyString('Sequence' . $seq), true) ?: [];
+            foreach ($rows as $row) {
+                if (empty($row['Active']) || (int)($row['Zone'] ?? -1) !== $idx) {
+                    continue;
+                }
+                $interval = max(1, (int)($row['Interval'] ?? 1));
+                $key = 's' . $seq . 'z' . $idx;
+                $last = isset($lastRun[$key]) ? (int)strtotime((string)$lastRun[$key]) : 0;
+
+                // Fälligkeitstag: letzter Lauf + Intervall, frühestens heute
+                $dueDay = $last > 0 ? strtotime('+' . $interval . ' days', $last) : strtotime('today');
+                if ($dueDay < strtotime('today')) {
+                    $dueDay = strtotime('today');
+                }
+                $candidate = strtotime(date('Y-m-d', $dueDay) . ' ' . $startHM);
+                if ($candidate <= time()) {
+                    // Heutiger Termin bereits vorbei (oder gerade gelaufen,
+                    // dann greift beim nächsten Tick lastRun=heute) ->
+                    // nächster möglicher Termin ist morgen zur Startzeit.
+                    $candidate = strtotime('+1 day', $candidate);
+                }
+                if ($bestTs === null || $candidate < $bestTs) {
+                    $bestTs = $candidate;
+                    $bestSeq = $seq;
+                }
+            }
+        }
+
+        if ($bestTs === null) {
+            return '–';
+        }
+
+        $dayLabel = match (date('Y-m-d', $bestTs)) {
+            date('Y-m-d')                          => 'heute',
+            date('Y-m-d', strtotime('+1 day'))     => 'morgen',
+            default                                => ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'][(int)date('w', $bestTs)]
+        };
+
+        return $dayLabel . ', ' . date('H:i', $bestTs) . ' (' . $this->seqName($bestSeq) . ')';
+    }
+
     private function sem(): string
     {
         return 'BWS_' . $this->InstanceID;
@@ -1695,6 +1921,16 @@ class Bewaesserungssteuerung extends IPSModule
                     'caption' => 'Anzeigename der zusammengelegten Rasen-Zone'
                 ],
                 [
+                    'type'    => 'ValidationTextBox',
+                    'name'    => 'Seq1Name',
+                    'caption' => 'Name Sequenz 1 (z. B. "Morgens")'
+                ],
+                [
+                    'type'    => 'ValidationTextBox',
+                    'name'    => 'Seq2Name',
+                    'caption' => 'Name Sequenz 2 (z. B. "Abends")'
+                ],
+                [
                     'type'    => 'List',
                     'name'    => 'Zones',
                     'caption' => 'Physische Beregnungszonen (Reihenfolge = Zonennummer)',
@@ -1769,7 +2005,7 @@ class Bewaesserungssteuerung extends IPSModule
                 ],
                 [
                     'type'    => 'ExpansionPanel',
-                    'caption' => 'Sequenz 1 (morgens) – Reihenfolge = Bewässerungsreihenfolge',
+                    'caption' => $this->seqName(1) . ' – Reihenfolge = Bewässerungsreihenfolge',
                     'items'   => [[
                         'type'     => 'List',
                         'name'     => 'Sequence1',
@@ -1781,7 +2017,7 @@ class Bewaesserungssteuerung extends IPSModule
                 ],
                 [
                     'type'    => 'ExpansionPanel',
-                    'caption' => 'Sequenz 2 (abends) – Reihenfolge = Bewässerungsreihenfolge',
+                    'caption' => $this->seqName(2) . ' – Reihenfolge = Bewässerungsreihenfolge',
                     'items'   => [[
                         'type'     => 'List',
                         'name'     => 'Sequence2',
@@ -1811,8 +2047,8 @@ class Bewaesserungssteuerung extends IPSModule
                 [
                     'type'    => 'RowLayout',
                     'items'   => [
-                        ['type' => 'Button', 'caption' => 'Sequenz 1 jetzt starten', 'onClick' => 'BWS_StartSequence($id, 1);'],
-                        ['type' => 'Button', 'caption' => 'Sequenz 2 jetzt starten', 'onClick' => 'BWS_StartSequence($id, 2);'],
+                        ['type' => 'Button', 'caption' => $this->seqName(1) . ' jetzt starten', 'onClick' => 'BWS_StartSequence($id, 1);'],
+                        ['type' => 'Button', 'caption' => $this->seqName(2) . ' jetzt starten', 'onClick' => 'BWS_StartSequence($id, 2);'],
                         ['type' => 'Button', 'caption' => 'Alles stoppen', 'onClick' => 'BWS_StopAll($id);'],
                         ['type' => 'Button', 'caption' => 'Zähler zurücksetzen', 'onClick' => 'BWS_ResetCounters($id);']
                     ]
