@@ -653,12 +653,17 @@ class Bewaesserungssteuerung extends IPSModule
             }
         }
 
-        // Abschluss: Pumpe aus -> Verfahrzeit -> letzte Ventile zu
-        // (falls die letzte Gruppe "Rasen" war, ist bereits alles geschlossen)
+        // Abschluss der Sequenz: Dies ist ein echter Abschlussvorgang ->
+        // Pumpe aus -> 1 s fest warten -> letzte Ventile zu (die kurze Pause
+        // stellt nur sicher, dass die Pumpe nicht gegen ein zufahrendes
+        // Ventil drückt; die Ventile dürfen danach in Ruhe schließen).
+        // War die letzte Gruppe "Rasen", ist über die Rasen-Kette bereits
+        // alles geschlossen worden (dort bewusst mit voller Verfahrzeit,
+        // da das kein regulärer Sequenz-Endschritt in diesem Sinne ist).
         $lastGroup = $groups[count($groups) - 1];
         $steps[] = ['cmd' => 'status', 'param' => $seqLabel . ': beende'];
         if (!$isLawnGroup($lastGroup)) {
-            $steps[] = ['cmd' => 'pump_off', 'post' => $groupTravel($lastGroup)];
+            $steps[] = ['cmd' => 'pump_off', 'post' => 1];
             foreach ($lastGroup as $z) {
                 $steps[] = ['cmd' => 'valve_off', 'zone' => $z['idx']];
             }
@@ -1038,9 +1043,14 @@ class Bewaesserungssteuerung extends IPSModule
         if (count($open) === 1) {
             // Letzte offene Zone: Pumpe-aus wird bewusst immer gesendet
             // (siehe shutdownSteps()), unabhängig vom internen PumpOnSince-Merker.
+            // Nach dem Pumpe-aus genügt eine kurze feste Wartezeit (1 s), bevor
+            // das Ventil schließt – sie stellt nur sicher, dass die Pumpe nicht
+            // mehr gegen ein zufahrendes Ventil drückt; das Ventil selbst darf
+            // danach in Ruhe schließen (die volle Verfahrzeit ist dafür nicht
+            // nötig, anders als beim Öffnen vor dem Pumpenstart).
             return [
                 ['cmd' => 'status', 'param' => 'Manuell: beende ' . $name],
-                ['cmd' => 'pump_off', 'post' => $this->travel($idx)],
+                ['cmd' => 'pump_off', 'post' => 1],
                 ['cmd' => 'valve_off', 'zone' => $idx],
                 ['cmd' => 'status', 'param' => 'Bereit'],
             ];
@@ -1051,6 +1061,11 @@ class Bewaesserungssteuerung extends IPSModule
     /**
      * Erzeugt Schritte, um den aktuellen Zustand geordnet herunterzufahren:
      * Pumpe aus -> max. Verfahrzeit warten -> alle offenen Ventile zu.
+     * Wird für „Alles stoppen"/Not-Aus (manueller Abbruch) und als
+     * Aufräumschritt vor einem Sequenzstart genutzt – das ist bewusst KEIN
+     * regulärer Abschluss einer Bewässerung, daher wird hier die volle
+     * Verfahrzeit abgewartet (nicht die verkürzte 1-s-Pause der regulären
+     * Endabschaltung).
      * Das Pumpe-aus-Kommando wird bewusst IMMER gesendet (nicht nur, wenn
      * der interne "PumpOnSince"-Merker die Pumpe als an führt) – so bleibt
      * "Alles stoppen" auch dann ein zuverlässiger Notausschalter, wenn
@@ -1058,8 +1073,8 @@ class Bewaesserungssteuerung extends IPSModule
      * KNX-Telegramm einmal nicht mit der Realität übereinstimmt.
      * Ist laut interner Buchführung gar nichts aktiv, wird eine verkürzte
      * Sicherheitsvariante erzeugt (nur Pumpe-aus mit kurzer Wartezeit, kein
-     * irreführender "Stoppe..."-Status, keine volle Verfahrzeit-Pause) –
-     * relevant z. B. beim Sequenzstart aus dem Leerlauf.
+     * irreführender "Stoppe..."-Status) – relevant z. B. beim Sequenzstart
+     * aus dem Leerlauf.
      */
     private function shutdownSteps(): array
     {

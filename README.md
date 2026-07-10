@@ -71,7 +71,10 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
   gruppen koppeln, die gemeinsam bewässert werden; der Gruppenwechsel ist
   so gestaffelt, dass nie mehr als 2 Ventile gleichzeitig offen sind
 - Einschalt-Schema: **Ventil auf → Verfahrzeit warten → Pumpe an**
-- Ausschalt-Schema: **Pumpe aus → Verfahrzeit warten → Ventil zu**
+- Ausschalt-Schema am regulären Ende (Sequenzende bzw. Ende der letzten
+  manuellen Steuerung): **Pumpe aus → 1 s fest warten → Ventil zu**. Bei
+  einem manuellen Abbruch mitten im Betrieb („Alles stoppen") wird
+  stattdessen die volle Verfahrzeit abgewartet.
 - Zonenwechsel in der Sequenz: **Ventil n+1 auf → 10 s Überlapp → Ventil n zu**
   (die Pumpe läuft dabei durch, sie arbeitet nie gegen komplett geschlossene Ventile)
 - Pumpenlaufzeit **heute** (Minuten) und **gesamt** (Stunden) im WebFront
@@ -260,11 +263,22 @@ dass in **jedem** Pfad (manuell einzeln, manuell mehrfach, Automatik-
 Sequenz, Abbruch, automatisches Abschalten) durchgängig gilt:
 
 - **Einschalten**: Ventil auf → Verfahrzeit warten → Pumpe an
-- **Ausschalten**: Pumpe aus → Verfahrzeit warten → Ventil zu
+- **Ausschalten am regulären Ende** (Ende einer Sequenz bzw. Ende der
+  letzten manuellen Steuerung, jeweils bevor das letzte Ventil schließt):
+  Pumpe aus → 1 s fest warten → Ventil zu. Die kurze feste Pause stellt nur
+  sicher, dass die Pumpe nicht mehr gegen ein zufahrendes Ventil drückt;
+  das Ventil darf danach in Ruhe schließen (die volle Verfahrzeit wie beim
+  Öffnen ist hier nicht nötig).
+- **Ausschalten bei manuellem Abbruch** („Alles stoppen"/Not-Aus, bevor die
+  Bewässerung regulär fertig ist) sowie beim internen Wechsel auf eine
+  „Rasen"-Kette: Pumpe aus → volle Verfahrzeit warten → Ventil zu. Diese
+  Fälle gelten bewusst nicht als reguläres Ende.
 - Sind **mehrere Zonen gleichzeitig offen**, wird die Pumpe **erst
   ausgeschaltet, wenn die jeweils letzte noch offene Zone geschlossen
   wird** – nie vorher, egal in welcher Reihenfolge oder zu welchem
   Zeitpunkt die einzelnen Zonen fertig werden.
+- Beim **Zonenwechsel innerhalb einer Sequenz** läuft die Pumpe durch
+  (Ventil n+1 auf → Überlapp → Ventil n zu); das ist kein Ausschaltvorgang.
 
 Dabei wurde ein echter Fehler gefunden und behoben: Bewässerungsdauern
 liefen bisher über dieselbe serielle, instanzweite Warteschlange wie die
