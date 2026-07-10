@@ -122,13 +122,11 @@ class Bewaesserungssteuerung extends IPSModule
             IPS_SetVariableProfileText('BWS.Cycles', '', ' Zyklen');
             IPS_SetVariableProfileIcon('BWS.Cycles', 'Repeat');
         }
-        if (!IPS_VariableProfileExists('BWS.SeqControl')) {
-            IPS_CreateVariableProfile('BWS.SeqControl', VARIABLETYPE_INTEGER);
-            IPS_SetVariableProfileIcon('BWS.SeqControl', 'Execute');
-            IPS_SetVariableProfileAssociation('BWS.SeqControl', 0, 'Stopp', '', 0xFF4040);
-            IPS_SetVariableProfileAssociation('BWS.SeqControl', 1, 'Sequenz 1', '', 0x40A0FF);
-            IPS_SetVariableProfileAssociation('BWS.SeqControl', 2, 'Sequenz 2', '', 0x4040FF);
-        }
+        // Hinweis: Die Sequenz-Auswahl (SeqControl) nutzt ein
+        // instanzspezifisches Profil BWS.SeqCtrl<InstanceID>, das weiter unten
+        // erstellt wird (damit die frei wählbaren Sequenznamen je Instanz als
+        // Button-Beschriftung erscheinen). Ein gemeinsames globales Profil
+        // gibt es dafür bewusst nicht mehr.
         if (!IPS_VariableProfileExists('BWS.Pressure')) {
             IPS_CreateVariableProfile('BWS.Pressure', VARIABLETYPE_FLOAT);
             IPS_SetVariableProfileText('BWS.Pressure', '', ' bar');
@@ -1769,12 +1767,6 @@ class Bewaesserungssteuerung extends IPSModule
     // Schalt-Warteschlange verwaltet, damit mehrere manuell geöffnete Zonen
     // ihre jeweils eigene Dauer parallel abwarten können (siehe manualZone()).
     // ------------------------------------------------------------------
-
-    private function zoneManualTarget(int $idx): int
-    {
-        $all = json_decode($this->ReadAttributeString('ZoneManualTarget'), true) ?: [];
-        return (int)($all[(string)$idx] ?? 0);
-    }
 
     private function setZoneManualTarget(int $idx, int $seconds): void
     {
