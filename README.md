@@ -81,6 +81,9 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
   inklusive Verfahrzeiten. Bei „Rasen" wird die Laufzeit als Ganzes für
   den zusammengelegten Kreis erfasst (inklusive der kurzen Überlapp-Zeit
   beim Wechsel zwischen den Teilflächen).
+- **Wasserverbrauch je Kreis** (letzte Laufzeit und gesamt, in Litern)
+  sowie als Gesamtsumme über alle Zonen — berechnet aus Durchfluss × Zeit,
+  erste Probe 20 s nach Bewässerungsbeginn, danach alle 10 s (siehe unten)
 - Zyklenzähler pro Motorkugelhahn (jedes Öffnen = 1 Zyklus)
 
 Alle Wartezeiten laufen **nicht blockierend** über eine Timer-gesteuerte
@@ -409,6 +412,40 @@ Zonennamen — im WebFront also genau die gewünschte Darstellung
 (Überschrift "Manuelle Laufzeit", darunter Buchenhecke, Ölweide, Rasen, …).
 Bestehende Werte werden beim ersten Übernehmen automatisch aus den alten
 Variablen übernommen (Migration), die alten Variablen werden entfernt.
+
+## Neu in Version 3.1: Wasserverbrauch
+
+Zwei neue Statistik-Größen je Zone sowie eine Gesamtsumme:
+
+- **„… – Wasserverbrauch letzte Laufzeit"** (Liter): Verbrauch des
+  aktuellen bzw. zuletzt abgeschlossenen Bewässerungslaufs dieser Zone.
+  Läuft die Zone gerade, zählt der Wert live mit.
+- **„… – Wasserverbrauch gesamt"** (Liter): Verbrauch dieser Zone seit
+  Installation bzw. letztem Zurücksetzen.
+- **„Wasserverbrauch gesamt"** (Liter, Statistik-Ebene): Summe über alle
+  Zonen und die gesamte Zeit.
+
+**Berechnung:** Verbrauch = Durchfluss (l/min) × Zeit, auf Basis der unter
+„Durchflusssensor" verknüpften Variable (siehe oben). Die erste Probe
+erfolgt frühestens 20 Sekunden nach Beginn der aktiven Bewässerung einer
+Zone (Verfahrzeit plus Anlaufzeit des Durchflusses), danach alle 10
+Sekunden — das gilt gleichermaßen für manuell geöffnete Zonen wie für
+Zonen innerhalb einer Automatik-Sequenz, da beide dieselbe interne
+Zonen-Buchführung nutzen. Ohne konfigurierten Durchflusssensor bleiben
+alle Wasserverbrauchs-Anzeigen bei 0.
+
+**Mehrere gleichzeitig offene Zonen:** Ein einzelner Durchflusssensor
+misst den Gesamtfluss der Anlage, nicht je Zone getrennt. Sind zwei Zonen
+gleichzeitig offen (Überlapp beim Sequenzwechsel oder „Parallel"-Kopplung),
+wird der gemessene Gesamtdurchfluss für die Dauer der Überschneidung
+gleichmäßig auf die gerade offenen Zonen aufgeteilt. Das ist eine
+Näherung — für exakte Werte je Zone wäre ein Durchflusssensor pro Zone
+nötig.
+
+Der Reset-Button „Zähler zurücksetzen" setzt jetzt auch die
+Wasserverbrauchs-Gesamtsummen zurück (der Verbrauch des gerade laufenden
+Bewässerungslaufs bleibt unberührt, da er sich beim nächsten Zonenstart
+ohnehin automatisch zurücksetzt).
 
 ## Bekannte Annahmen / Grenzen
 
