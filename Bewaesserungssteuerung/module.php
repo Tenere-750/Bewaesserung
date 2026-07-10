@@ -77,6 +77,14 @@ class Bewaesserungssteuerung extends IPSModule
         $this->RegisterPropertyInteger('MaxParallel', 2);
         $this->RegisterPropertyInteger('OverlapTime', 10);
 
+        // Weather-Underground-Regensperre (optional, standardmäßig aus):
+        // Regnet es laut der gewählten PWS-Station beim Start einer Sequenz,
+        // wird der Start unterbunden.
+        $this->RegisterPropertyBoolean('WUEnabled', false);
+        $this->RegisterPropertyString('WUApiKey', '');
+        $this->RegisterPropertyString('WUStationID', '');
+        $this->RegisterPropertyFloat('WURainThreshold', 0.0); // mm/h; 0 = jede messbare Regenrate sperrt
+
         // ------------------------------------------------------------------
         // Attribute (persistenter interner Zustand)
         // ------------------------------------------------------------------
@@ -516,6 +524,14 @@ class Bewaesserungssteuerung extends IPSModule
         }
 
         $seqLabel = $this->seqName($Sequence);
+
+        // Optionale Weather-Underground-Regensperre: Meldet die gewählte
+        // PWS-Station beim Start Regen, wird der Start unterbunden.
+        if ($this->wuRainBlocks($rainReason)) {
+            $this->SetValue('Status', $seqLabel . ': Start wegen Regen unterbunden');
+            $this->LogMessage($seqLabel . ' nicht gestartet – ' . $rainReason, KL_NOTIFY);
+            return;
+        }
 
         $zones = $this->logicalZones();
         $rows = json_decode($this->ReadPropertyString('Sequence' . $Sequence), true) ?: [];
@@ -1762,6 +1778,130 @@ class Bewaesserungssteuerung extends IPSModule
     }
 
     /**
+     * Prüft, ob die optionale Weather-Underground-Regensperre den Start
+     * einer Sequenz verhindern soll. Gibt true zurück, wenn die Option
+     * aktiv ist UND die gewählte PWS-Station beim Aufruf (also zum
+     * Startzeitpunkt der Sequenz) Regen meldet, dessen Rate über der
+     * eingestellten Schwelle liegt.
+     *
+     * Ist die Option aus, kein API-Key oder keine Station-ID hinterlegt,
+     * oder lässt sich die Beobachtung nicht abrufen/auswerten, gibt die
+     * Funktion false zurück – die Regensperre blockiert also im Zweifel
+     * NICHT (sie soll die Bewässerung absichern, nicht durch API-Störungen
+     * ganz verhindern). Der Grund wird in $reason zurückgegeben.
+     */
+    private function wuRainBlocks(?string &$reason = null): bool
+    {
+        $reason = '';
+        if (!$this->ReadPropertyBoolean('WUEnabled')) {
+            return false;
+        }
+        $apiKey = trim($this->ReadPropertyString('WUApiKey'));
+        $station = trim($this->ReadPropertyString('WUStationID'));
+        if ($apiKey === '' || $station === '') {
+            $reason = 'Regensperre aktiv, aber API-Key oder Station-ID fehlt – Start wird nicht blockiert';
+            $this->LogMessage($reason, KL_WARNING);
+            return false;
+        }
+
+        $rate = $this->wuCurrentPrecipRate($station, $apiKey, $err);
+        if ($rate === null) {
+            $reason = 'Regensperre: Wetterdaten nicht abrufbar (' . $err . ') – Start wird nicht blockiert';
+            $this->LogMessage($reason, KL_WARNING);
+            return false;
+        }
+
+        $threshold = max(0.0, $this->ReadPropertyFloat('WURainThreshold'));
+        // Schwelle 0 -> jede messbare Regenrate (> 0) sperrt.
+        $blocks = $threshold > 0 ? ($rate >= $threshold) : ($rate > 0);
+        if ($blocks) {
+            $reason = 'Regensperre aktiv: Station ' . $station . ' meldet ' . $rate . ' mm/h (Schwelle ' . ($threshold > 0 ? $threshold . ' mm/h' : 'jeder Regen') . ')';
+        }
+        return $blocks;
+    }
+
+    /**
+     * Ruft die aktuelle Regenrate (mm/h) der PWS-Station über die
+     * Weather-Underground-/TWC-API ab. Gibt null zurück, wenn der Abruf
+     * fehlschlägt oder die Antwort nicht auswertbar ist (Grund in $err).
+     */
+    private function wuCurrentPrecipRate(string $station, string $apiKey, ?string &$err = null): ?float
+    {
+        $err = '';
+        $url = 'https://api.weather.com/v2/pws/observations/current'
+            . '?stationId=' . rawurlencode($station)
+            . '&format=json&units=m&numericPrecision=decimal'
+            . '&apiKey=' . rawurlencode($apiKey);
+
+        $body = false;
+        if (function_exists('curl_init')) {
+            $ch = curl_init($url);
+            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 8);
+            $result = curl_exec($ch);
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $curlErr = curl_error($ch);
+            curl_close($ch);
+            if ($result !== false && $httpCode >= 200 && $httpCode < 300) {
+                $body = $result;
+            } else {
+                $err = $curlErr !== '' ? $curlErr : ('HTTP ' . $httpCode);
+            }
+        } else {
+            $ctx = stream_context_create(['http' => ['timeout' => 10, 'ignore_errors' => true]]);
+            $body = @file_get_contents($url, false, $ctx);
+            if ($body === false) {
+                $err = 'HTTP-Anfrage fehlgeschlagen (allow_url_fopen?)';
+            }
+        }
+        if ($body === false) {
+            if ($err === '') {
+                $err = 'HTTP-Anfrage fehlgeschlagen';
+            }
+            return null;
+        }
+
+        $data = json_decode($body, true);
+        if (!is_array($data) || empty($data['observations'][0])) {
+            $err = 'unerwartete Antwort';
+            return null;
+        }
+        $obs = $data['observations'][0];
+
+        // Metrische Werte liegen im Unterobjekt "metric"; precipRate ist die
+        // aktuelle Regenrate in mm/h.
+        $rate = $obs['metric']['precipRate'] ?? ($obs['precipRate'] ?? null);
+        if ($rate === null || !is_numeric($rate)) {
+            $err = 'kein Regenraten-Wert in der Antwort';
+            return null;
+        }
+        return (float)$rate;
+    }
+
+    /**
+     * Öffentlicher Helfer für den "Verbindung testen"-Button im
+     * Instanz-Editor: ruft die aktuelle Regenrate ab und meldet das
+     * Ergebnis im Meldungsfenster.
+     */
+    public function WUTestConnection(): void
+    {
+        $apiKey = trim($this->ReadPropertyString('WUApiKey'));
+        $station = trim($this->ReadPropertyString('WUStationID'));
+        if ($apiKey === '' || $station === '') {
+            echo "Bitte zuerst API-Key und Station-ID eintragen und übernehmen.";
+            return;
+        }
+        $rate = $this->wuCurrentPrecipRate($station, $apiKey, $err);
+        if ($rate === null) {
+            echo "Abruf fehlgeschlagen: " . $err;
+            return;
+        }
+        echo "Verbindung ok. Aktuelle Regenrate an Station " . $station . ": " . $rate . " mm/h"
+            . ($rate > 0 ? " (es regnet – ein Sequenzstart würde blockiert)" : " (kein Regen)");
+    }
+
+    /**
      * Pumpen-Watchdog (läuft im 10-s-Takt aus CheckSchedule): Solange laut
      * interner Buchführung bewässert wird (Pumpe an + mindestens eine Zone
      * offen), wird der Pumpen-Einschaltbefehl abgesichert:
@@ -2092,6 +2232,44 @@ class Bewaesserungssteuerung extends IPSModule
                     'caption' => 'Überlapp beim Zonenwechsel',
                     'suffix'  => ' s',
                     'minimum' => 0
+                ],
+                [
+                    'type'    => 'ExpansionPanel',
+                    'caption' => 'Regensperre (Weather Underground, optional)',
+                    'items'   => [
+                        [
+                            'type'    => 'CheckBox',
+                            'name'    => 'WUEnabled',
+                            'caption' => 'Regensperre aktiv – Sequenzstart bei Regen unterbinden'
+                        ],
+                        [
+                            'type'    => 'Label',
+                            'caption' => 'Regnet es beim Start einer Sequenz laut der gewählten PWS-Station, wird der Start unterbunden. Kostenlosen API-Key unter wunderground.com/member/api-keys anlegen (PWS erforderlich).'
+                        ],
+                        [
+                            'type'    => 'ValidationTextBox',
+                            'name'    => 'WUStationID',
+                            'caption' => 'PWS-Station-ID (z. B. IEUSKIRC12)'
+                        ],
+                        [
+                            'type'    => 'PasswordTextBox',
+                            'name'    => 'WUApiKey',
+                            'caption' => 'API-Key'
+                        ],
+                        [
+                            'type'    => 'NumberSpinner',
+                            'name'    => 'WURainThreshold',
+                            'caption' => 'Regenraten-Schwelle (0 = jeder Regen sperrt)',
+                            'suffix'  => ' mm/h',
+                            'digits'  => 1,
+                            'minimum' => 0
+                        ],
+                        [
+                            'type'    => 'Button',
+                            'caption' => 'Verbindung testen',
+                            'onClick' => 'BWS_WUTestConnection($id);'
+                        ]
+                    ]
                 ]
             ],
             'actions' => [

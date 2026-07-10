@@ -43,6 +43,9 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
   gelegten Rasen-Zone genügt es, wenn **eine** der beiden Teilflächen
   trocken meldet, dann wird gegossen (siehe „Sensor-Logik im Detail" unten).
 - Master-Schalter
+- Optionale **Regensperre über Weather Underground** (abschaltbar, frei
+  wählbare PWS-Station): regnet es beim Start einer Sequenz laut Station,
+  wird der Start unterbunden (siehe „Regensperre" unten)
 - Optionale Anzeige des **echten Pumpenstatus** (KNX-Rückmeldung des
   Pumpenaktors) im WebFront direkt unter „Status" – zeigt, ob die Pumpe
   wirklich läuft, unabhängig von der internen Annahme des Moduls;
@@ -388,6 +391,38 @@ Zonennamen — im WebFront also genau die gewünschte Darstellung
 (Überschrift "Manuelle Laufzeit", darunter Buchenhecke, Ölweide, Rasen, …).
 Bestehende Werte werden beim ersten Übernehmen automatisch aus den alten
 Variablen übernommen (Migration), die alten Variablen werden entfernt.
+
+## Regensperre (Weather Underground)
+
+Eine optionale, standardmäßig abgeschaltete Sperre, die den Start einer
+Sequenz unterbindet, wenn es zum Startzeitpunkt an der gewählten
+Personal-Weather-Station (PWS) regnet.
+
+**Einrichtung** (Instanz-Editor, aufklappbarer Bereich „Regensperre"):
+- Häkchen „Regensperre aktiv" setzen.
+- **PWS-Station-ID** eintragen (die ID der gewünschten Wetterstation auf
+  wunderground.com, z. B. `IEUSKIRC12`). Die Station ist frei wählbar –
+  es muss nicht die eigene sein, eine nahe gelegene genügt.
+- **API-Key** eintragen. Einen kostenlosen Key gibt es unter
+  `wunderground.com/member/api-keys` (setzt voraus, dass ein eigenes PWS
+  bei Weather Underground registriert ist).
+- Optional eine **Regenraten-Schwelle** in mm/h angeben. `0` bedeutet:
+  jeder gemessene Regen (Rate > 0) sperrt. Ein höherer Wert lässt leichten
+  Niesel durch und sperrt erst ab der eingestellten Intensität.
+- Mit **„Verbindung testen"** lässt sich sofort prüfen, ob Station-ID und
+  Key stimmen und ob es aktuell regnet.
+
+**Verhalten:**
+- Geprüft wird die **aktuelle** Regenmeldung der Station im Moment des
+  Sequenzstarts (sowohl beim automatischen Start zur eingestellten Uhrzeit
+  als auch beim manuellen „… jetzt starten"). Meldet die Station Regen
+  über der Schwelle, wird der Start abgebrochen und im Status sowie im
+  Meldungsfenster vermerkt.
+- Die Sperre ist bewusst „fail-open": Ist die Option aus, fehlen Key oder
+  Station-ID, oder lässt sich die Wetterabfrage nicht durchführen (kein
+  Internet, API-Störung), wird der Start **nicht** blockiert – die
+  Bewässerung soll durch eine Störung der Wetterabfrage nicht dauerhaft
+  ausfallen. Solche Fälle werden im Meldungsfenster protokolliert.
 
 ## Wasserverbrauch
 
