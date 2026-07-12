@@ -197,20 +197,25 @@ getrennt.
 | Startzeit je Sequenz | Uhrzeit-Eingabe für den Automatikstart (eine je Sequenz) |
 
 Die Sequenzen erscheinen als Blöcke („Automatik …", darunter „Startzeit …"),
-**sortiert nach Startzeit** – die früheste zuerst. Sequenzen mit
-ausgeschalteter Automatik gelten als inaktiv und rutschen ans Ende der Liste.
-Die Reihenfolge zieht sofort mit, sobald eine Startzeit geändert oder ein
+**sortiert nach Startzeit** – die früheste zuerst.
+
+**Inaktive Sequenzen** (Automatik ausgeschaltet) rutschen ans Ende der Liste,
+und ihre **Startzeit-Zeile wird ausgeblendet** – eine Uhrzeit ohne aktive
+Automatik wäre irreführend, da die Sequenz zu dieser Zeit ja nicht startet.
+Sichtbar bleibt nur der Automatik-Schalter, über den sie sich wieder
+einschalten lässt. Die eingestellte Startzeit bleibt dabei gespeichert und
+erscheint beim Wiedereinschalten unverändert.
+
+Die Anzeige zieht sofort mit, sobald eine Startzeit geändert oder ein
 Automatik-Schalter umgelegt wird. Beispiel:
 
 ```
-Automatik Sequenz 4     [ein]
-Startzeit Sequenz 4     05:00
-Automatik Sequenz 2     [ein]
-Startzeit Sequenz 2     09:00
-Automatik Sequenz 1     [ein]
-Startzeit Sequenz 1     21:00
-Automatik Sequenz 3     [aus]      <- inaktiv, daher zuletzt
-Startzeit Sequenz 3     07:00
+Automatik Morgens      [ein]
+Startzeit Morgens      05:00
+Automatik Abends       [ein]
+Startzeit Abends       21:00
+Automatik Mittags      [aus]      <- inaktiv: keine Startzeit-Zeile
+Automatik Sequenz 4    [aus]      <- inaktiv: keine Startzeit-Zeile
 ```
 | „…" – manuelle Dauer | pro Kreis direkt im WebFront einstellbar (Minuten); bestimmt, wie lange die Zone beim nächsten manuellen Einschalten bewässert wird. Voreingestellt mit der Standard-Bewässerungsdauer aus der Zonenkonfiguration, hier aber jederzeit ohne Formular anpassbar |
 | Zonen-Schalter | manuelle Bewässerung: öffnet die Zone und schließt sie **automatisch** nach Ablauf der oben eingestellten Dauer wieder (Pumpe wird dabei geordnet mitgeschaltet). Vorzeitiges Ausschalten bricht sauber ab. „Rasen" arbeitet dabei die komplette Kette ab (Teilfläche 1 → kurzer Überlapp → Teilfläche 2, jeweils für die eingestellte Dauer je Teilfläche) und schaltet sich danach selbst wieder aus |

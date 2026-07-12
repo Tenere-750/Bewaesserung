@@ -1798,8 +1798,13 @@ class Bewaesserungssteuerung extends IPSModule
     /**
      * Ordnet die Sequenzblöcke (je "Automatik …" gefolgt von "Startzeit …")
      * im WebFront nach der eingestellten Startzeit – die früheste zuerst.
-     * Sequenzen mit ausgeschalteter Automatik gelten als inaktiv und werden
-     * ans Ende gestellt (untereinander weiter nach Startzeit sortiert).
+     *
+     * Sequenzen mit ausgeschalteter Automatik gelten als inaktiv: Sie werden
+     * ans Ende gestellt, und ihre Startzeit-Zeile wird ausgeblendet, da eine
+     * Uhrzeit ohne aktive Automatik irreführend wäre (die Sequenz startet ja
+     * nicht). Sichtbar bleibt nur der Automatik-Schalter, über den sie sich
+     * wieder einschalten lässt – die gespeicherte Startzeit bleibt dabei
+     * erhalten und erscheint beim Einschalten wieder.
      *
      * Die Blöcke liegen im Positionsbereich 40..47, also zwischen
      * "Restlaufzeit" (36) und der Unterkategorie "Nächste Laufzeiten" (60).
@@ -1807,7 +1812,7 @@ class Bewaesserungssteuerung extends IPSModule
      *
      * Wird bei jedem Übernehmen sowie bei jeder Änderung einer Startzeit
      * oder eines Automatik-Schalters aufgerufen (siehe RequestAction()),
-     * damit die Reihenfolge im WebFront sofort mitzieht.
+     * damit die Anzeige im WebFront sofort mitzieht.
      */
     private function updateSequenceOrder(): void
     {
@@ -1847,11 +1852,13 @@ class Bewaesserungssteuerung extends IPSModule
         });
 
         // Positionen vergeben: je Sequenz zwei aufeinanderfolgende Plätze
-        // (Automatik, dann Startzeit), beginnend bei 40.
+        // (Automatik, dann Startzeit), beginnend bei 40. Bei inaktiven
+        // Sequenzen wird die Startzeit ausgeblendet (s. o.).
         $pos = 40;
         foreach ($seqs as $entry) {
             IPS_SetPosition($entry['autoID'], $pos++);
             IPS_SetPosition($entry['timeID'], $pos++);
+            IPS_SetHidden($entry['timeID'], !$entry['active']);
         }
     }
 
