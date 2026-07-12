@@ -51,7 +51,7 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
   wirklich läuft, unabhängig von der internen Annahme des Moduls;
   Abweichungen werden zusätzlich im Meldungsfenster protokolliert
 - Optionale Anzeige von **Wasserdruck** und **Durchfluss** im WebFront
-  (zwischen „Status" und „Startzeit Sequenz 1"), gespeist aus je einer
+  (zwischen „Status" und den Startzeit-Feldern), gespeist aus je einer
   frei wählbaren, bereits vorhandenen Sensor-Variable
 - **Restlaufzeit** im WebFront (direkt unter „Durchfluss"): verbleibende
   Zeit bis zum vollständigen Abschluss der aktuell laufenden
@@ -59,7 +59,8 @@ Rasen-Zusammenlegung von zwei physischen Zonen zu einem logischen Kreis.
 - Manuelle Steuerung jeder (logischen) Zone im WebFront, **mit direkt im
   WebFront einstellbarer Bewässerungsdauer je Kreis** – die Zone schaltet
   nach Ablauf automatisch wieder ab, statt unbegrenzt offen zu bleiben
-- Zwei Automatik-Sequenzen pro Tag (morgens/abends), Startzeit im WebFront einstellbar
+- **Vier Automatik-Sequenzen** pro Tag (z. B. morgens/abends/mittags/nachts),
+  Startzeit je Sequenz im WebFront einstellbar, jede einzeln aktivierbar
 - Reihenfolge der Zonen **pro Sequenz** frei definierbar (= Zeilenreihenfolge in der Liste)
 - **Bewässerungsdauer je Kreis konfigurierbar**: jede Zone hat eine eigene
   Standard-Bewässerungsdauer (in der Zonenliste). Diese wird in Sequenz 1
@@ -159,7 +160,7 @@ Schritt-Warteschlange – kein `IPS_Sleep`, keine hängenden PHP-Threads.
      resistiven/Rohwert-Sensoren); Standard ist „hoher Wert = feucht"
    - Die Zeilenreihenfolge bestimmt die spätere Zonennummer (nach der
      Rasen-Zusammenlegung)
-6. **Sequenz 1 / Sequenz 2**: pro Zeile logische Zone, Dauer, Intervall
+6. **Sequenz 1 bis 4**: pro Zeile logische Zone, Dauer, Intervall
    (Tage), „Parallel zur vorherigen Zone" und Aktiv-Haken. Die
    Zeilenreihenfolge ist die Bewässerungsreihenfolge. Die Zonen-Auswahl
    zeigt bereits die logischen Kreise nach der Rasen-Zusammenlegung.
@@ -167,7 +168,7 @@ Schritt-Warteschlange – kein `IPS_Sleep`, keine hängenden PHP-Threads.
    verwenden" (so ist jede neu angelegte Zeile voreingestellt); ein Wert
    **> 0** überschreibt die Dauer nur für diese eine Zeile — praktisch,
    wenn dieselbe Zone morgens kürzer und abends länger laufen soll.
-   Dieselbe Zone darf in beiden Sequenzen zusätzlich mit unterschiedlichen
+   Dieselbe Zone darf in mehreren Sequenzen zusätzlich mit unterschiedlichen
    Intervallen stehen. **Wichtig bei „Rasen"**: die wirksame Dauer gilt
    **je Teilfläche** (Rasen links UND Rasen rechts laufen jeweils so
    lange) – die tatsächliche Gesamtlaufzeit ist also etwa doppelt so lang
@@ -186,14 +187,14 @@ getrennt.
 | Variable | Funktion |
 |---|---|
 | Master-Schalter | Aus = sofortiger geordneter Stopp, Automatik gesperrt |
-| Automatik-Sequenz | Buttons: Stopp / Sequenz 1 / Sequenz 2 (manueller Start) |
+| Automatik-Sequenz | Buttons: Stopp / Sequenz 1–4 (manueller Start) |
 | Status | Klartext, was gerade passiert (inkl. wegen Feuchte übersprungener Zonen) |
 | Pumpenstatus (Rückmeldung) | reine Anzeige (an/aus); zeigt die tatsächliche KNX-Rückmeldung des Pumpenaktors, alle 10 s aktualisiert. Weicht sie vom intern angenommenen Zustand ab, wird das zusätzlich im Meldungsfenster protokolliert (siehe „Pumpen-Status: Absicherung gegen Status-Desync" unten) |
 | Wasserdruck | reine Anzeige (bar); zeigt den Wert der unter „Wasserdrucksensor" verknüpften Variable, alle 10 s aktualisiert |
 | Durchfluss | reine Anzeige (l/min); zeigt den Wert der unter „Durchflusssensor" verknüpften Variable, alle 10 s aktualisiert |
 | Restlaufzeit | reine Anzeige (Minuten, aufgerundet); verbleibende Zeit bis zum vollständigen Abschluss der aktuell laufenden Automatik-Sequenz **oder** manuellen Bewässerung. 0, wenn nichts aktiv ist. Aktualisiert sich bei jeder Zustandsänderung sofort sowie zusätzlich alle 10 s |
-| Startzeit Sequenz 1/2 | Uhrzeit-Eingabe für den Automatikstart |
-| Automatik Sequenz 1/2 | Automatikstart einzeln aktivieren/deaktivieren |
+| Startzeit je Sequenz | Uhrzeit-Eingabe für den Automatikstart (eine je Sequenz) |
+| Automatik je Sequenz | Automatikstart je Sequenz einzeln aktivieren/deaktivieren |
 | „…" – manuelle Dauer | pro Kreis direkt im WebFront einstellbar (Minuten); bestimmt, wie lange die Zone beim nächsten manuellen Einschalten bewässert wird. Voreingestellt mit der Standard-Bewässerungsdauer aus der Zonenkonfiguration, hier aber jederzeit ohne Formular anpassbar |
 | Zonen-Schalter | manuelle Bewässerung: öffnet die Zone und schließt sie **automatisch** nach Ablauf der oben eingestellten Dauer wieder (Pumpe wird dabei geordnet mitgeschaltet). Vorzeitiges Ausschalten bricht sauber ab. „Rasen" arbeitet dabei die komplette Kette ab (Teilfläche 1 → kurzer Überlapp → Teilfläche 2, jeweils für die eingestellte Dauer je Teilfläche) und schaltet sich danach selbst wieder aus |
 
@@ -377,7 +378,7 @@ Zone an dem Tag weiterhin überspringen (nicht vorhersagbar). Deaktivierte
 Automatik-Sequenzen werden nicht berücksichtigt; ohne aktiven
 Sequenz-Eintrag zeigt der Kreis "–".
 
-**Frei wählbare Sequenznamen:** Im Instanz-Editor lassen sich beide
+**Frei wählbare Sequenznamen:** Im Instanz-Editor lässt sich jede der vier
 Sequenzen benennen (z. B. "Morgens"/"Abends"). Der Name erscheint überall:
 auf den Auswahl-Buttons im WebFront, bei "Startzeit …"/"Automatik …", in
 den Status-Texten, in der Nächste-Laufzeit-Anzeige, in den Panel-
@@ -471,6 +472,27 @@ Einschwingphase jedes folgenden Kreises sekündlich erfasst.
 Der Reset-Button „Zähler zurücksetzen" setzt die Gesamtsumme zurück; die
 Summe der aktuellen/letzten Laufzeit bleibt unberührt, da sie sich beim
 nächsten Sequenz- bzw. manuellen Start ohnehin automatisch auf 0 setzt.
+
+## Vier Sequenzen
+
+Das Modul unterstützt **vier** Automatik-Sequenzen pro Tag. Jede Sequenz hat:
+
+- eine eigene, frei wählbare Bezeichnung (Instanz-Editor),
+- eine eigene Zonenliste (Reihenfolge = Bewässerungsreihenfolge, mit Dauer,
+  Intervall und „Parallel"-Kopplung je Zeile),
+- eine eigene Startzeit und einen eigenen Automatik-Schalter im WebFront,
+- einen eigenen „… jetzt starten"-Button im Instanz-Editor.
+
+Die Sequenz-Auswahl im WebFront zeigt entsprechend „Stopp" plus die vier
+Sequenznamen. Es läuft immer nur **eine** Sequenz zur Zeit; startet eine
+Sequenz, während eine andere läuft, wird das über den Status abgewiesen.
+
+**Nach einem Update von einer älteren Version:** Die bestehenden Sequenzen 1
+und 2 bleiben mit allen Einstellungen erhalten. Die neuen Sequenzen 3 und 4
+werden angelegt, sind aber zunächst **leer und deaktiviert** – ihr
+Automatik-Schalter steht bewusst auf „aus", damit nach dem Update nicht
+unerwartet zusätzliche Bewässerungen anlaufen. Sie werden erst aktiv, wenn
+Zonen eingetragen und der Automatik-Schalter eingeschaltet wird.
 
 ## Bekannte Annahmen / Grenzen
 

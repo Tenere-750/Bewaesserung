@@ -40,6 +40,7 @@ declare(strict_types=1);
 class Bewaesserungssteuerung extends IPSModule
 {
     private const MAX_ZONES = 12;
+    private const MAX_SEQUENCES = 4;
 
     /** Request-lokaler Cache für logicalZones() – die Konfiguration ändert
      *  sich innerhalb eines PHP-Aufrufs nicht, wird aber von travel(),
@@ -70,10 +71,12 @@ class Bewaesserungssteuerung extends IPSModule
         $this->RegisterPropertyString('Zones', $defaultZones);
         $this->RegisterPropertyString('LawnName', 'Rasen');
 
-        $this->RegisterPropertyString('Sequence1', '[]');   // [{Zone, Duration, Interval, Parallel, Active}]
-        $this->RegisterPropertyString('Sequence2', '[]');
-        $this->RegisterPropertyString('Seq1Name', 'Sequenz 1');
-        $this->RegisterPropertyString('Seq2Name', 'Sequenz 2');
+        // Sequenzen: je Sequenz eine Zonenliste und ein frei wählbarer Name.
+        // [{Zone, Duration, Interval, Parallel, Active}]
+        for ($s = 1; $s <= self::MAX_SEQUENCES; $s++) {
+            $this->RegisterPropertyString('Sequence' . $s, '[]');
+            $this->RegisterPropertyString('Seq' . $s . 'Name', 'Sequenz ' . $s);
+        }
         $this->RegisterPropertyInteger('MaxParallel', 2);
         $this->RegisterPropertyInteger('OverlapTime', 10);
 
@@ -197,8 +200,10 @@ class Bewaesserungssteuerung extends IPSModule
             IPS_SetVariableProfileIcon($seqProfile, 'Execute');
         }
         IPS_SetVariableProfileAssociation($seqProfile, 0, 'Stopp', '', 0xFF4040);
-        IPS_SetVariableProfileAssociation($seqProfile, 1, $this->seqName(1), '', 0x40A0FF);
-        IPS_SetVariableProfileAssociation($seqProfile, 2, $this->seqName(2), '', 0x4040FF);
+        $seqColors = [0x40A0FF, 0x4040FF, 0x40C0A0, 0xA060FF];
+        for ($s = 1; $s <= self::MAX_SEQUENCES; $s++) {
+            IPS_SetVariableProfileAssociation($seqProfile, $s, $this->seqName($s), '', $seqColors[$s - 1] ?? 0x808080);
+        }
 
         $this->RegisterVariableInteger('SeqControl', 'Automatik-Sequenz', $seqProfile, 20);
         $this->EnableAction('SeqControl');
@@ -233,36 +238,38 @@ class Bewaesserungssteuerung extends IPSModule
         // (siehe updateRemainingDisplay()). 0, wenn nichts aktiv ist.
         $this->RegisterVariableInteger('Remaining', 'Restlaufzeit', 'BWS.Minutes', 36);
 
-        $newST1 = @$this->GetIDForIdent('StartTime1') === false;
-        $this->RegisterVariableInteger('StartTime1', 'Startzeit ' . $this->seqName(1), '~UnixTimestampTime', 40);
-        $this->EnableAction('StartTime1');
-        IPS_SetName($this->GetIDForIdent('StartTime1'), 'Startzeit ' . $this->seqName(1));
-        if ($newST1) {
-            $this->SetValue('StartTime1', strtotime('06:00'));
-        }
+        // Startzeit + Automatik-Schalter je Sequenz.
+        // Positionen 40..47 (paarweise), damit sie zwischen "Restlaufzeit" (36)
+        // und der Unterkategorie "Nächste Laufzeiten" (60) liegen.
+        $defaultTimes = ['06:00', '19:00', '12:00', '22:00'];
+        for ($s = 1; $s <= self::MAX_SEQUENCES; $s++) {
+            $stIdent = 'StartTime' . $s;
+            $auIdent = 'Auto' . $s;
+            $stName  = 'Startzeit ' . $this->seqName($s);
+            $auName  = 'Automatik ' . $this->seqName($s);
 
-        $newA1 = @$this->GetIDForIdent('Auto1') === false;
-        $this->RegisterVariableBoolean('Auto1', 'Automatik ' . $this->seqName(1), '~Switch', 45);
-        $this->EnableAction('Auto1');
-        IPS_SetName($this->GetIDForIdent('Auto1'), 'Automatik ' . $this->seqName(1));
-        if ($newA1) {
-            $this->SetValue('Auto1', true);
-        }
+            $isNewST = @$this->GetIDForIdent($stIdent) === false;
+            $this->RegisterVariableInteger($stIdent, $stName, '~UnixTimestampTime', 40 + ($s - 1) * 2);
+            $this->EnableAction($stIdent);
+            // MaintainVariable/RegisterVariable aktualisiert den Namen bei
+            // bestehenden Variablen nicht -> explizit nachziehen, damit eine
+            // Umbenennung der Sequenz im WebFront ankommt.
+            IPS_SetName($this->GetIDForIdent($stIdent), $stName);
+            if ($isNewST) {
+                $this->SetValue($stIdent, strtotime($defaultTimes[$s - 1] ?? '06:00'));
+            }
 
-        $newST2 = @$this->GetIDForIdent('StartTime2') === false;
-        $this->RegisterVariableInteger('StartTime2', 'Startzeit ' . $this->seqName(2), '~UnixTimestampTime', 50);
-        $this->EnableAction('StartTime2');
-        IPS_SetName($this->GetIDForIdent('StartTime2'), 'Startzeit ' . $this->seqName(2));
-        if ($newST2) {
-            $this->SetValue('StartTime2', strtotime('19:00'));
-        }
-
-        $newA2 = @$this->GetIDForIdent('Auto2') === false;
-        $this->RegisterVariableBoolean('Auto2', 'Automatik ' . $this->seqName(2), '~Switch', 55);
-        $this->EnableAction('Auto2');
-        IPS_SetName($this->GetIDForIdent('Auto2'), 'Automatik ' . $this->seqName(2));
-        if ($newA2) {
-            $this->SetValue('Auto2', true);
+            $isNewAU = @$this->GetIDForIdent($auIdent) === false;
+            $this->RegisterVariableBoolean($auIdent, $auName, '~Switch', 41 + ($s - 1) * 2);
+            $this->EnableAction($auIdent);
+            IPS_SetName($this->GetIDForIdent($auIdent), $auName);
+            if ($isNewAU) {
+                // Nur die beiden ursprünglichen Sequenzen sind standardmäßig
+                // aktiv; die neu hinzugekommenen (3/4) startet der Nutzer
+                // bewusst selbst, damit nach einem Update nicht plötzlich
+                // zusätzliche Bewässerungen laufen.
+                $this->SetValue($auIdent, $s <= 2);
+            }
         }
 
         // ------------------------------------------------------------------
@@ -475,13 +482,11 @@ class Bewaesserungssteuerung extends IPSModule
                 }
                 break;
 
-            case $Ident === 'StartTime1':
-            case $Ident === 'StartTime2':
+            case str_starts_with($Ident, 'StartTime'):
                 $this->SetValue($Ident, (int)$Value);
                 break;
 
-            case $Ident === 'Auto1':
-            case $Ident === 'Auto2':
+            case str_starts_with($Ident, 'Auto'):
                 $this->SetValue($Ident, (bool)$Value);
                 break;
 
@@ -515,7 +520,7 @@ class Bewaesserungssteuerung extends IPSModule
      */
     public function StartSequence(int $Sequence): void
     {
-        if (!in_array($Sequence, [1, 2], true)) {
+        if ($Sequence < 1 || $Sequence > self::MAX_SEQUENCES) {
             return;
         }
         if (!$this->GetValue('Active')) {
@@ -774,7 +779,7 @@ class Bewaesserungssteuerung extends IPSModule
 
         $now = date('H:i');
         $started = json_decode($this->GetBuffer('Started'), true) ?: [];
-        foreach ([1, 2] as $seq) {
+        for ($seq = 1; $seq <= self::MAX_SEQUENCES; $seq++) {
             if (!$this->GetValue('Auto' . $seq)) {
                 continue;
             }
@@ -1967,7 +1972,7 @@ class Bewaesserungssteuerung extends IPSModule
         $bestTs = null;
         $bestSeq = 0;
 
-        foreach ([1, 2] as $seq) {
+        for ($seq = 1; $seq <= self::MAX_SEQUENCES; $seq++) {
             if (!$this->GetValue('Auto' . $seq)) {
                 continue;
             }
@@ -2084,6 +2089,41 @@ class Bewaesserungssteuerung extends IPSModule
             ]
         ];
 
+        // --- Formularteile, die je Sequenz erzeugt werden ---
+        $seqNameExamples = ['Morgens', 'Abends', 'Mittags', 'Nachts'];
+        $seqNameFields = [];
+        $seqPanels = [];
+        $seqStartButtons = [];
+
+        for ($s = 1; $s <= self::MAX_SEQUENCES; $s++) {
+            $example = $seqNameExamples[$s - 1] ?? ('Sequenz ' . $s);
+
+            $seqNameFields[] = [
+                'type'    => 'ValidationTextBox',
+                'name'    => 'Seq' . $s . 'Name',
+                'caption' => 'Name Sequenz ' . $s . ' (z. B. "' . $example . '")'
+            ];
+
+            $seqPanels[] = [
+                'type'    => 'ExpansionPanel',
+                'caption' => $this->seqName($s) . ' – Reihenfolge = Bewässerungsreihenfolge',
+                'items'   => [[
+                    'type'     => 'List',
+                    'name'     => 'Sequence' . $s,
+                    'rowCount' => 7,
+                    'add'      => true,
+                    'delete'   => true,
+                    'columns'  => $sequenceColumns
+                ]]
+            ];
+
+            $seqStartButtons[] = [
+                'type'    => 'Button',
+                'caption' => $this->seqName($s) . ' jetzt starten',
+                'onClick' => 'BWS_StartSequence($id, ' . $s . ');'
+            ];
+        }
+
         $form = [
             'elements' => [
                 [
@@ -2111,16 +2151,7 @@ class Bewaesserungssteuerung extends IPSModule
                     'name'    => 'LawnName',
                     'caption' => 'Anzeigename der zusammengelegten Rasen-Zone'
                 ],
-                [
-                    'type'    => 'ValidationTextBox',
-                    'name'    => 'Seq1Name',
-                    'caption' => 'Name Sequenz 1 (z. B. "Morgens")'
-                ],
-                [
-                    'type'    => 'ValidationTextBox',
-                    'name'    => 'Seq2Name',
-                    'caption' => 'Name Sequenz 2 (z. B. "Abends")'
-                ],
+                ...$seqNameFields,
                 [
                     'type'    => 'List',
                     'name'    => 'Zones',
@@ -2194,30 +2225,7 @@ class Bewaesserungssteuerung extends IPSModule
                         ]
                     ]
                 ],
-                [
-                    'type'    => 'ExpansionPanel',
-                    'caption' => $this->seqName(1) . ' – Reihenfolge = Bewässerungsreihenfolge',
-                    'items'   => [[
-                        'type'     => 'List',
-                        'name'     => 'Sequence1',
-                        'rowCount' => 7,
-                        'add'      => true,
-                        'delete'   => true,
-                        'columns'  => $sequenceColumns
-                    ]]
-                ],
-                [
-                    'type'    => 'ExpansionPanel',
-                    'caption' => $this->seqName(2) . ' – Reihenfolge = Bewässerungsreihenfolge',
-                    'items'   => [[
-                        'type'     => 'List',
-                        'name'     => 'Sequence2',
-                        'rowCount' => 7,
-                        'add'      => true,
-                        'delete'   => true,
-                        'columns'  => $sequenceColumns
-                    ]]
-                ],
+                ...$seqPanels,
                 [
                     'type'    => 'NumberSpinner',
                     'name'    => 'MaxParallel',
@@ -2274,10 +2282,12 @@ class Bewaesserungssteuerung extends IPSModule
             ],
             'actions' => [
                 [
-                    'type'    => 'RowLayout',
-                    'items'   => [
-                        ['type' => 'Button', 'caption' => $this->seqName(1) . ' jetzt starten', 'onClick' => 'BWS_StartSequence($id, 1);'],
-                        ['type' => 'Button', 'caption' => $this->seqName(2) . ' jetzt starten', 'onClick' => 'BWS_StartSequence($id, 2);'],
+                    'type'  => 'RowLayout',
+                    'items' => $seqStartButtons
+                ],
+                [
+                    'type'  => 'RowLayout',
+                    'items' => [
                         ['type' => 'Button', 'caption' => 'Alles stoppen', 'onClick' => 'BWS_StopAll($id);'],
                         ['type' => 'Button', 'caption' => 'Zähler zurücksetzen', 'onClick' => 'BWS_ResetCounters($id);']
                     ]
