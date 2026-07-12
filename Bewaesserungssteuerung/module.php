@@ -239,8 +239,11 @@ class Bewaesserungssteuerung extends IPSModule
         $this->RegisterVariableInteger('Remaining', 'Restlaufzeit', 'BWS.Minutes', 36);
 
         // Startzeit + Automatik-Schalter je Sequenz.
-        // Positionen 40..47 (paarweise), damit sie zwischen "Restlaufzeit" (36)
-        // und der Unterkategorie "Nächste Laufzeiten" (60) liegen.
+        // Die konkreten Positionen werden NICHT hier vergeben, sondern
+        // dynamisch von updateSequenceOrder() – die Sequenzblöcke sollen im
+        // WebFront nach Startzeit sortiert erscheinen (inaktive zuletzt).
+        // Die hier gesetzten Positionen sind daher nur ein Startwert, der
+        // gleich darauf überschrieben wird.
         $defaultTimes = ['06:00', '19:00', '12:00', '22:00'];
         for ($s = 1; $s <= self::MAX_SEQUENCES; $s++) {
             $stIdent = 'StartTime' . $s;
@@ -248,20 +251,12 @@ class Bewaesserungssteuerung extends IPSModule
             $stName  = 'Startzeit ' . $this->seqName($s);
             $auName  = 'Automatik ' . $this->seqName($s);
 
-            $isNewST = @$this->GetIDForIdent($stIdent) === false;
-            $this->RegisterVariableInteger($stIdent, $stName, '~UnixTimestampTime', 40 + ($s - 1) * 2);
-            $this->EnableAction($stIdent);
-            // MaintainVariable/RegisterVariable aktualisiert den Namen bei
-            // bestehenden Variablen nicht -> explizit nachziehen, damit eine
-            // Umbenennung der Sequenz im WebFront ankommt.
-            IPS_SetName($this->GetIDForIdent($stIdent), $stName);
-            if ($isNewST) {
-                $this->SetValue($stIdent, strtotime($defaultTimes[$s - 1] ?? '06:00'));
-            }
-
             $isNewAU = @$this->GetIDForIdent($auIdent) === false;
-            $this->RegisterVariableBoolean($auIdent, $auName, '~Switch', 41 + ($s - 1) * 2);
+            $this->RegisterVariableBoolean($auIdent, $auName, '~Switch', 40);
             $this->EnableAction($auIdent);
+            // RegisterVariable aktualisiert den Namen bei bestehenden
+            // Variablen nicht -> explizit nachziehen, damit eine Umbenennung
+            // der Sequenz im WebFront ankommt.
             IPS_SetName($this->GetIDForIdent($auIdent), $auName);
             if ($isNewAU) {
                 // Nur die beiden ursprünglichen Sequenzen sind standardmäßig
@@ -270,7 +265,18 @@ class Bewaesserungssteuerung extends IPSModule
                 // zusätzliche Bewässerungen laufen.
                 $this->SetValue($auIdent, $s <= 2);
             }
+
+            $isNewST = @$this->GetIDForIdent($stIdent) === false;
+            $this->RegisterVariableInteger($stIdent, $stName, '~UnixTimestampTime', 41);
+            $this->EnableAction($stIdent);
+            IPS_SetName($this->GetIDForIdent($stIdent), $stName);
+            if ($isNewST) {
+                $this->SetValue($stIdent, strtotime($defaultTimes[$s - 1] ?? '06:00'));
+            }
         }
+
+        // Sequenzblöcke nach Startzeit sortieren (siehe updateSequenceOrder())
+        $this->updateSequenceOrder();
 
         // ------------------------------------------------------------------
         // Statistik-Kategorie (separiert Laufzeiten/Zyklen von der Steuerung)
@@ -484,10 +490,17 @@ class Bewaesserungssteuerung extends IPSModule
 
             case str_starts_with($Ident, 'StartTime'):
                 $this->SetValue($Ident, (int)$Value);
+                // Reihenfolge der Sequenzblöcke hängt an der Startzeit ->
+                // sofort neu sortieren, dazu die Vorschau aktualisieren.
+                $this->updateSequenceOrder();
+                $this->updateNextRunDisplays();
                 break;
 
             case str_starts_with($Ident, 'Auto'):
                 $this->SetValue($Ident, (bool)$Value);
+                // Inaktive Sequenzen rutschen ans Ende -> neu sortieren.
+                $this->updateSequenceOrder();
+                $this->updateNextRunDisplays();
                 break;
 
             case str_starts_with($Ident, 'ManualZ'):
@@ -1780,6 +1793,66 @@ class Bewaesserungssteuerung extends IPSModule
     {
         $name = trim($this->ReadPropertyString('Seq' . $seq . 'Name'));
         return $name !== '' ? $name : ('Sequenz ' . $seq);
+    }
+
+    /**
+     * Ordnet die Sequenzblöcke (je "Automatik …" gefolgt von "Startzeit …")
+     * im WebFront nach der eingestellten Startzeit – die früheste zuerst.
+     * Sequenzen mit ausgeschalteter Automatik gelten als inaktiv und werden
+     * ans Ende gestellt (untereinander weiter nach Startzeit sortiert).
+     *
+     * Die Blöcke liegen im Positionsbereich 40..47, also zwischen
+     * "Restlaufzeit" (36) und der Unterkategorie "Nächste Laufzeiten" (60).
+     * Innerhalb eines Blocks steht die Automatik vor der Startzeit.
+     *
+     * Wird bei jedem Übernehmen sowie bei jeder Änderung einer Startzeit
+     * oder eines Automatik-Schalters aufgerufen (siehe RequestAction()),
+     * damit die Reihenfolge im WebFront sofort mitzieht.
+     */
+    private function updateSequenceOrder(): void
+    {
+        $seqs = [];
+        for ($s = 1; $s <= self::MAX_SEQUENCES; $s++) {
+            $autoID = @$this->GetIDForIdent('Auto' . $s);
+            $timeID = @$this->GetIDForIdent('StartTime' . $s);
+            if ($autoID === false || $timeID === false) {
+                continue; // Variablen noch nicht angelegt
+            }
+
+            $ts = (int)GetValue($timeID);
+            // ~UnixTimestampTime speichert die Uhrzeit als Timestamp; für die
+            // Sortierung zählt nur die Tageszeit, nicht das Datum.
+            $minutesOfDay = $ts > 0 ? ((int)date('H', $ts) * 60 + (int)date('i', $ts)) : 0;
+
+            $seqs[] = [
+                'seq'      => $s,
+                'active'   => (bool)GetValue($autoID),
+                'minutes'  => $minutesOfDay,
+                'autoID'   => $autoID,
+                'timeID'   => $timeID,
+            ];
+        }
+
+        // Aktive zuerst (nach Tageszeit), danach die inaktiven (ebenfalls
+        // nach Tageszeit, damit die Reihenfolge stabil und nachvollziehbar
+        // bleibt). Bei Gleichstand entscheidet die Sequenznummer.
+        usort($seqs, function (array $a, array $b): int {
+            if ($a['active'] !== $b['active']) {
+                return $a['active'] ? -1 : 1;
+            }
+            if ($a['minutes'] !== $b['minutes']) {
+                return $a['minutes'] <=> $b['minutes'];
+            }
+            return $a['seq'] <=> $b['seq'];
+        });
+
+        // Positionen vergeben: je Sequenz zwei aufeinanderfolgende Plätze
+        // (Automatik, dann Startzeit), beginnend bei 40.
+        $pos = 40;
+        foreach ($seqs as $entry) {
+            IPS_SetPosition($entry['autoID'], $pos++);
+            IPS_SetPosition($entry['timeID'], $pos++);
+        }
     }
 
     /**

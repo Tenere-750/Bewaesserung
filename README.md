@@ -193,8 +193,25 @@ getrennt.
 | Wasserdruck | reine Anzeige (bar); zeigt den Wert der unter „Wasserdrucksensor" verknüpften Variable, alle 10 s aktualisiert |
 | Durchfluss | reine Anzeige (l/min); zeigt den Wert der unter „Durchflusssensor" verknüpften Variable, alle 10 s aktualisiert |
 | Restlaufzeit | reine Anzeige (Minuten, aufgerundet); verbleibende Zeit bis zum vollständigen Abschluss der aktuell laufenden Automatik-Sequenz **oder** manuellen Bewässerung. 0, wenn nichts aktiv ist. Aktualisiert sich bei jeder Zustandsänderung sofort sowie zusätzlich alle 10 s |
-| Startzeit je Sequenz | Uhrzeit-Eingabe für den Automatikstart (eine je Sequenz) |
 | Automatik je Sequenz | Automatikstart je Sequenz einzeln aktivieren/deaktivieren |
+| Startzeit je Sequenz | Uhrzeit-Eingabe für den Automatikstart (eine je Sequenz) |
+
+Die Sequenzen erscheinen als Blöcke („Automatik …", darunter „Startzeit …"),
+**sortiert nach Startzeit** – die früheste zuerst. Sequenzen mit
+ausgeschalteter Automatik gelten als inaktiv und rutschen ans Ende der Liste.
+Die Reihenfolge zieht sofort mit, sobald eine Startzeit geändert oder ein
+Automatik-Schalter umgelegt wird. Beispiel:
+
+```
+Automatik Sequenz 4     [ein]
+Startzeit Sequenz 4     05:00
+Automatik Sequenz 2     [ein]
+Startzeit Sequenz 2     09:00
+Automatik Sequenz 1     [ein]
+Startzeit Sequenz 1     21:00
+Automatik Sequenz 3     [aus]      <- inaktiv, daher zuletzt
+Startzeit Sequenz 3     07:00
+```
 | „…" – manuelle Dauer | pro Kreis direkt im WebFront einstellbar (Minuten); bestimmt, wie lange die Zone beim nächsten manuellen Einschalten bewässert wird. Voreingestellt mit der Standard-Bewässerungsdauer aus der Zonenkonfiguration, hier aber jederzeit ohne Formular anpassbar |
 | Zonen-Schalter | manuelle Bewässerung: öffnet die Zone und schließt sie **automatisch** nach Ablauf der oben eingestellten Dauer wieder (Pumpe wird dabei geordnet mitgeschaltet). Vorzeitiges Ausschalten bricht sauber ab. „Rasen" arbeitet dabei die komplette Kette ab (Teilfläche 1 → kurzer Überlapp → Teilfläche 2, jeweils für die eingestellte Dauer je Teilfläche) und schaltet sich danach selbst wieder aus |
 
