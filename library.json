@@ -4,10 +4,10 @@
     "name": "Bewässerung",
     "description": "Bewässerungssteuerung (KNX) mit Motorkugelhähnen, Pumpe, Rasen-Zusammenlegung, optionalem Bodenfeuchtesensor, vier Tages-Sequenzen und Intervallsteuerung pro Zone",
     "compatibility": {
-    "version": "9.0"
+        "version": "9.0"
     },
     "url": "",
-    "version": "3.6.2",
-    "build": 29,
+    "version": "4.0.0",
+    "build": 30,
     "date": 0
 }
