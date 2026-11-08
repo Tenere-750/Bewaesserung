@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.2.0
+
+- **Bedienoberfläche als Kachel** (HTML-SDK, `visualization.html`) für die
+  Kachel-Visualisierung, parallel zum klassischen WebFront: aktueller Lauf
+  mit Restzeit, Messwerte, Zonen mit Start/Stopp und Dauer, Zeitplan,
+  Wartungsmodus, Statistik. Responsiv, heller und dunkler Modus, ohne
+  externe Ressourcen.
+- Die Kachel nutzt dieselben Aktionen wie das WebFront; abgelehnte
+  Bedienungen erscheinen als Hinweis. Aktualisiert wird nur bei Änderung.
+- Startzeiten lassen sich auch als „HH:MM" setzen; die manuelle Dauer ist
+  auf 1–240 min begrenzt.
+
 ## 4.1.1
 
 - Überwachung für stromlos schließende Kugelhähne (NC): Die minütliche

@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bewässerung</title>
+<style>
+  :root {
+    --bg: #E9EFEB;
+    --surface: #FFFFFF;
+    --surface-2: #F4F7F5;
+    --line: #D3DDD7;
+    --ink: #17261F;
+    --muted: #5A6B63;
+    --leaf: #2F6B45;
+    --leaf-soft: #DCEBDF;
+    --water: #1F6FA8;
+    --water-deep: #155A8C;
+    --water-soft: #D3E6F3;
+    --water-fill: rgba(31, 111, 168, .16);
+    --amber: #9A5A12;
+    --amber-soft: #F6E7CF;
+    --danger: #A23B2A;
+    --radius-l: 20px;
+    --radius-m: 14px;
+    --radius-s: 10px;
+    --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "SF Pro Text", Roboto, "Noto Sans", sans-serif;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0F1714;
+      --surface: #17221D;
+      --surface-2: #1D2A24;
+      --line: #2A3A33;
+      --ink: #E4ECE7;
+      --muted: #97A8A0;
+      --leaf: #79C08F;
+      --leaf-soft: #1F3A2A;
+      --water: #5EAEE6;
+      --water-deep: #8CC6EE;
+      --water-soft: #16324A;
+      --water-fill: rgba(94, 174, 230, .20);
+      --amber: #E2A85A;
+      --amber-soft: #3A2A14;
+      --danger: #EE8A77;
+      color-scheme: dark;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.45 var(--font);
+    -webkit-font-smoothing: antialiased;
+    container-type: inline-size;
+  }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; }
+  :focus-visible { outline: 2px solid var(--water); outline-offset: 2px; }
+
+  .app { max-width: 1080px; margin: 0 auto; padding: 16px; display: grid; gap: 18px; }
+
+  /* ---------- Kopf ------------------------------------------------------ */
+  .top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+  .top h1 { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: -.01em; }
+  .toggles { display: flex; gap: 8px; }
+
+  .toggle {
+    display: inline-flex; align-items: center; gap: 10px;
+    min-height: 40px; padding: 6px 14px 6px 8px;
+    border: 1px solid var(--line); border-radius: 999px;
+    background: var(--surface);
+  }
+  .toggle .knob {
+    width: 34px; height: 20px; border-radius: 999px; background: var(--line);
+    position: relative; transition: background .2s;
+  }
+  .toggle .knob::after {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px;
+    border-radius: 50%; background: var(--surface); transition: transform .2s;
+  }
+  .toggle[aria-checked="true"] .knob { background: var(--leaf); }
+  .toggle[aria-checked="true"] .knob::after { transform: translateX(14px); }
+  .toggle.amber[aria-checked="true"] { border-color: var(--amber); background: var(--amber-soft); }
+  .toggle.amber[aria-checked="true"] .knob { background: var(--amber); }
+
+  /* ---------- Jetzt-Bereich -------------------------------------------- */
+  .now {
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l);
+    padding: 20px; display: grid; gap: 16px; position: relative; overflow: hidden;
+  }
+  .now.running { border-color: var(--water); }
+  .now.maintenance { border-color: var(--amber); background: linear-gradient(var(--amber-soft), var(--surface) 140px); }
+  .now.off { background: var(--surface-2); }
+  .now-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
+  .kicker { margin: 0 0 4px; color: var(--muted); font-size: 14px; }
+  .now.running .kicker { color: var(--water-deep); }
+  .now.maintenance .kicker { color: var(--amber); }
+  .headline { margin: 0; font-size: clamp(22px, 5cqi, 32px); font-weight: 650; line-height: 1.15; letter-spacing: -.015em; }
+  .sub { margin: 6px 0 0; color: var(--muted); max-width: 60ch; }
+  .sub.error { color: var(--danger); font-weight: 560; }
+
+  .clock { text-align: right; }
+  .clock .value {
+    font-size: clamp(40px, 11cqi, 64px); font-weight: 300; line-height: 1;
+    font-variant-numeric: tabular-nums; letter-spacing: -.02em; color: var(--water-deep);
+  }
+  .clock .label { color: var(--muted); font-size: 13px; margin-top: 4px; }
+
+  .flowline { height: 6px; border-radius: 999px; background: var(--water-soft); overflow: hidden; }
+  .flowline span { display: block; height: 100%; width: var(--p, 0%); background: var(--water); border-radius: inherit; transition: width 1s linear; }
+
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .btn {
+    min-height: 40px; padding: 8px 16px; border-radius: var(--radius-s);
+    border: 1px solid var(--line); background: var(--surface); font-weight: 560;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--muted); }
+  .btn.primary { background: var(--leaf); border-color: var(--leaf); color: #fff; }
+  .btn.go { background: var(--water); border-color: var(--water); color: #fff; }
+  .btn.stop { background: var(--ink); border-color: var(--ink); color: var(--surface); }
+  .btn.amber { background: var(--amber); border-color: var(--amber); color: #fff; }
+  .btn:disabled { opacity: .45; }
+  .btn[aria-busy="true"] { opacity: .6; }
+  @media (prefers-color-scheme: dark) {
+    .btn.primary, .btn.go, .btn.amber { color: #0F1714; }
+  }
+
+  /* ---------- Messwerte ------------------------------------------------- */
+  .readings { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: var(--radius-m); overflow: hidden; }
+  .reading { background: var(--surface); padding: 12px 14px; }
+  .reading .v { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .reading .v small { font-size: 13px; font-weight: 500; color: var(--muted); margin-left: 2px; }
+  .reading .k { color: var(--muted); font-size: 13px; }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--line); margin-right: 6px; vertical-align: 1px; }
+  .dot.on { background: var(--water); box-shadow: 0 0 0 4px var(--water-soft); }
+
+  /* ---------- Abschnitte ------------------------------------------------ */
+  section > header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 4px 2px 10px; }
+  section h2 { margin: 0; font-size: 17px; font-weight: 650; }
+  section > header p { margin: 0; color: var(--muted); font-size: 13px; }
+
+  /* ---------- Zonen: das eine auffällige Element ------------------------ */
+  .zones { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+  .zone {
+    position: relative; overflow: hidden; isolation: isolate;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m);
+    padding: 14px; display: grid; gap: 12px; min-height: 148px; align-content: space-between;
+  }
+  .zone .fill {
+    position: absolute; inset: auto 0 0 0; height: var(--level, 0%); z-index: -1;
+    background: var(--water-fill); transition: height 1s linear;
+  }
+  .zone .fill::before {
+    content: ""; position: absolute; left: 0; right: 0; top: -7px; height: 8px;
+    background: radial-gradient(10px 6px at 10px 8px, var(--water-fill) 98%, transparent) 0 0 / 20px 8px repeat-x;
+    animation: wave 2.4s linear infinite;
+  }
+  @keyframes wave { to { background-position-x: 20px; } }
+  .zone.open { border-color: var(--water); }
+  .zone.unusable { background: var(--surface-2); }
+  .zone h3 { margin: 0; font-size: 16px; font-weight: 620; }
+  .zone .state { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+  .zone.open .state { color: var(--water-deep); font-weight: 560; font-variant-numeric: tabular-nums; }
+  .zone .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+
+  .stepper { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface); }
+  .stepper button { width: 34px; height: 36px; border: 0; background: none; font-size: 18px; line-height: 1; color: var(--muted); }
+  .stepper button:hover:not(:disabled) { color: var(--ink); }
+  .stepper output { min-width: 54px; text-align: center; font-variant-numeric: tabular-nums; font-size: 14px; }
+
+  /* ---------- Zeitplan -------------------------------------------------- */
+  .plan { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); }
+  .seq { display: grid; grid-template-columns: 1fr auto auto auto; align-items: center; gap: 12px; padding: 12px 14px; }
+  .seq + .seq { border-top: 1px solid var(--line); }
+  .seq .name { font-weight: 600; }
+  .seq .meta { color: var(--muted); font-size: 13px; }
+  .seq.disabled .name, .seq.disabled input { opacity: .55; }
+  .seq input[type="time"] {
+    border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface-2);
+    padding: 6px 8px; min-height: 38px; font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- Wartung --------------------------------------------------- */
+  .valves { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .valve {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    min-height: 48px; padding: 8px 12px; border-radius: var(--radius-s);
+    border: 1px solid var(--line); background: var(--surface); text-align: left;
+  }
+  .valve .vs { font-size: 13px; color: var(--muted); }
+  .valve[aria-pressed="true"] { border-color: var(--amber); background: var(--amber-soft); }
+  .valve[aria-pressed="true"] .vs { color: var(--amber); font-weight: 600; }
+
+  /* ---------- Statistik ------------------------------------------------- */
+  details.stats { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); }
+  details.stats summary { padding: 12px 14px; font-weight: 600; cursor: pointer; list-style: none; display: flex; justify-content: space-between; }
+  details.stats summary::-webkit-details-marker { display: none; }
+  details.stats summary::after { content: "+"; color: var(--muted); font-weight: 400; }
+  details.stats[open] summary::after { content: "–"; }
+  .stats-body { padding: 0 14px 14px; display: grid; gap: 14px; }
+  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+  .stats-grid div { background: var(--surface-2); border-radius: var(--radius-s); padding: 10px 12px; }
+  .stats-grid b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; }
+  .stats-grid span { color: var(--muted); font-size: 13px; }
+  table.cycles { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.cycles td { padding: 6px 0; border-top: 1px solid var(--line); }
+  table.cycles td:last-child { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+
+  /* ---------- Hinweis --------------------------------------------------- */
+  .toast {
+    position: fixed; left: 50%; bottom: 16px; transform: translate(-50%, 20px); opacity: 0;
+    max-width: min(520px, calc(100% - 32px)); padding: 12px 16px; border-radius: var(--radius-m);
+    background: var(--ink); color: var(--surface); font-size: 14px; pointer-events: none;
+    transition: opacity .2s, transform .2s;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  .empty { color: var(--muted); padding: 16px; text-align: center; }
+
+  /* ---------- Schmale Kacheln ------------------------------------------- */
+  @container (max-width: 480px) {
+    .app { padding: 12px; gap: 14px; }
+    .now { padding: 16px; }
+    .clock { text-align: left; }
+    .seq { grid-template-columns: 1fr auto; row-gap: 10px; }
+    .seq .toggle { justify-self: start; }
+    .zones { grid-template-columns: 1fr 1fr; }
+    .zone { min-height: 136px; padding: 12px; }
+    .zone .row { flex-direction: column; align-items: stretch; }
+    .zone .row .btn { width: 100%; }
+    .stepper { justify-content: space-between; }
+  }
+  @container (max-width: 340px) {
+    .zones { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <h1>Bewässerung</h1>
+    <div class="toggles">
+      <button class="toggle" id="master" role="switch" aria-checked="false"><span class="knob"></span><span class="label">Anlage</span></button>
+      <button class="toggle amber" id="maintenance" role="switch" aria-checked="false"><span class="knob"></span><span class="label">Wartung</span></button>
+    </div>
+  </header>
+
+  <div id="now" class="now" aria-live="polite"><p class="kicker">Verbinde …</p></div>
+  <div id="readings" class="readings" hidden></div>
+
+  <section id="zones-section">
+    <header><h2>Zonen</h2><p id="zones-hint"></p></header>
+    <div id="zones" class="zones"></div>
+  </section>
+
+  <section>
+    <header><h2>Zeitplan</h2><p>Startzeiten und Automatik je Sequenz</p></header>
+    <div id="plan" class="plan"></div>
+  </section>
+
+  <details class="stats" id="stats">
+    <summary>Statistik</summary>
+    <div class="stats-body" id="stats-body"></div>
+  </details>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  let state = null;
+  let offset = 0;
+  let lastNotice = null;
+  const pending = new Set();
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const num = (v, d = 0) => Number(v).toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const now = () => Math.floor((Date.now() + offset) / 1000);
+
+  function duration(sec) {
+    sec = Math.max(0, Math.round(sec));
+    const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60), s = sec % 60;
+    return h > 0 ? h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0') : m + ':' + String(s).padStart(2, '0');
+  }
+  function clockTime(ts) {
+    return new Date((ts * 1000)).toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+  }
+  function list(names) {
+    return names.length < 2 ? (names[0] || '') : names.slice(0, -1).join(', ') + ' und ' + names[names.length - 1];
+  }
+  function setHTML(el, html) {
+    if (el.__html !== html) { el.innerHTML = html; el.__html = html; }
+  }
+
+  // ---- Verbindung zu IP-Symcon -------------------------------------------
+  function act(ident, value, key) {
+    if (key) { pending.add(key); render(); setTimeout(() => { pending.delete(key); render(); }, 4000); }
+    try {
+      requestAction(ident, value);
+    } catch (e) {
+      toast('Aktion nicht ausgeführt: ' + e.message);
+    }
+  }
+
+  window.handleMessage = function (data) {
+    const s = typeof data === 'string' ? JSON.parse(data) : data;
+    if (!s || !Array.isArray(s.zones)) return;
+    offset = s.now * 1000 - Date.now();
+    state = s;
+    pending.clear();
+    if (s.notice && lastNotice !== null && s.notice.id !== lastNotice) toast(s.notice.text);
+    lastNotice = s.notice ? s.notice.id : 0;
+    render();
+  };
+
+  let toastTimer;
+  function toast(text) {
+    const t = $('toast');
+    t.textContent = text;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 4500);
+  }
+
+  // ---- Darstellung --------------------------------------------------------
+  function render() {
+    if (!state) return;
+    const s = state;
+    $('master').setAttribute('aria-checked', String(s.master));
+    $('maintenance').setAttribute('aria-checked', String(s.maintenance));
+    renderNow(s);
+    renderReadings(s);
+    renderZones(s);
+    renderPlan(s);
+    renderStats(s);
+    tick();
+  }
+
+  function openZones(s) { return s.zones.filter((z) => z.open); }
+
+  // Statuszeile des Moduls; im Ruhezustand nur, wenn sie mehr sagt als "Bereit".
+  function note(s, idle) {
+    const text = s.status || '';
+    if (!text || (s.notice && s.notice.text === text) || (idle && text === 'Bereit')) return '';
+    return '<p class="sub' + (/^Fehler/.test(text) ? ' error' : '') + '">' + esc(text) + '</p>';
+  }
+
+  function renderNow(s) {
+    const el = $('now');
+    let cls = 'now', html;
+    const open = openZones(s);
+
+    if (s.maintenance) {
+      cls += ' maintenance';
+      const valves = s.valves.map((v) => {
+        const busy = pending.has('V' + v.phys);
+        return '<button class="valve" data-valve="' + v.phys + '" aria-pressed="' + v.open + '"' + (busy ? ' aria-busy="true"' : '') + '>'
+          + '<span>' + esc(v.name) + '</span><span class="vs">' + (v.open ? 'offen' : 'zu') + '</span></button>';
+      }).join('');
+      html = '<div class="now-head"><div><p class="kicker">Wartungsmodus</p><p class="headline">Pumpe gesperrt</p>'
+        + '<p class="sub">Kugelhähne einzeln öffnen, zum Beispiel zum Ausblasen der Leitungen. Beim Beenden schließen alle Hähne.</p></div></div>'
+        + '<div class="valves">' + valves + '</div>'
+        + '<div class="actions"><button class="btn amber" data-action="maintenance-off">Wartung beenden</button></div>';
+    } else if (s.busy && (open.length || s.sequence)) {
+      cls += ' running';
+      const seq = s.sequences.find((q) => q.n === s.sequence);
+      const kicker = seq ? 'Läuft – ' + esc(seq.name) : 'Läuft – manuell gestartet';
+      const head = open.length ? esc(list(open.map((z) => z.name))) : 'Ventile werden umgeschaltet';
+      html = '<div class="now-head"><div><p class="kicker">' + kicker + '</p><p class="headline">' + head + '</p>'
+        + note(s) + '</div>'
+        + (s.endsAt ? '<div class="clock"><div class="value" data-until="' + s.endsAt + '">–</div><div class="label">fertig gegen ' + clockTime(s.endsAt) + '</div></div>' : '')
+        + '</div>'
+        + (s.endsAt && s.startedAt ? '<div class="flowline"><span data-from="' + s.startedAt + '" data-progress-until="' + s.endsAt + '"></span></div>' : '')
+        + '<div class="actions"><button class="btn stop" data-action="stop"' + (pending.has('stop') ? ' aria-busy="true"' : '') + '>Alles stoppen</button></div>';
+    } else if (s.busy) {
+      cls += ' running';
+      html = '<div class="now-head"><div><p class="kicker">Wird beendet</p><p class="headline">Ventile schließen</p><p class="sub">' + esc(s.status) + '</p></div></div>';
+    } else if (!s.master) {
+      cls += ' off';
+      html = '<div class="now-head"><div><p class="kicker">Anlage ausgeschaltet</p><p class="headline">Keine Bewässerung</p>'
+        + '<p class="sub">Automatik und Zonen sind gesperrt, Termine in dieser Zeit entfallen.</p></div></div>'
+        + '<div class="actions"><button class="btn primary" data-action="master-on">Anlage einschalten</button></div>';
+    } else if (s.upcoming) {
+      const u = s.upcoming;
+      const seq = s.sequences.find((q) => q.name === u.name);
+      html = '<div class="now-head"><div><p class="kicker">Als Nächstes</p><p class="headline">' + esc(u.day) + ' um ' + esc(u.time) + '</p>'
+        + '<p class="sub">' + esc(u.name) + ': ' + esc(list(u.zones)) + '</p>' + note(s, true) + '</div></div>'
+        + (seq ? '<div class="actions"><button class="btn go" data-seq-start="' + seq.n + '">' + esc(seq.name) + ' jetzt starten</button></div>' : '');
+    } else {
+      html = '<div class="now-head"><div><p class="kicker">Bereit</p><p class="headline">Nichts geplant</p>'
+        + '<p class="sub">Keine aktive Sequenz mit fälligen Zonen. Startzeiten und Automatik lassen sich unten im Zeitplan einstellen.</p></div></div>';
+    }
+    el.className = cls;
+    setHTML(el, html);
+  }
+
+  function renderReadings(s) {
+    const items = [];
+    if (s.pressure !== null) items.push(['Druck', num(s.pressure, 1), 'bar']);
+    if (s.flow !== null) items.push(['Durchfluss', num(s.flow, 1), 'l/min']);
+    const pumpOn = s.pumpFeedback !== null ? s.pumpFeedback : s.pump;
+    items.push(['Pumpe' + (s.pumpFeedback !== null ? ' (Rückmeldung)' : ''), '<span class="dot' + (pumpOn ? ' on' : '') + '"></span>' + (pumpOn ? 'läuft' : 'aus'), '']);
+    items.push(['Pumpe heute', num(s.stats.runtimeDay), 'min']);
+    const el = $('readings');
+    el.hidden = false;
+    setHTML(el, items.map(([k, v, u]) => '<div class="reading"><div class="v">' + v + (u ? '<small>' + u + '</small>' : '') + '</div><div class="k">' + k + '</div></div>').join(''));
+  }
+
+  function zoneLock(s) {
+    if (s.maintenance) return 'Im Wartungsmodus gesperrt';
+    if (!s.master) return 'Anlage ist ausgeschaltet';
+    if (s.sequence) return 'Während der Sequenz gesperrt';
+    return '';
+  }
+
+  function renderZones(s) {
+    const lock = zoneLock(s);
+    $('zones-hint').textContent = lock || ('höchstens ' + s.maxParallel + ' gleichzeitig');
+    if (!s.zones.length) {
+      setHTML($('zones'), '<p class="empty">Noch keine Zonen eingerichtet.</p>');
+      return;
+    }
+    setHTML($('zones'), s.zones.map((z) => {
+      const active = z.open || z.manual;
+      const busy = pending.has('Z' + z.idx);
+      let stateText;
+      const watering = z.open && !s.maintenance;
+      if (!z.usable) stateText = 'Kein Ventil eingerichtet';
+      else if (z.open && s.maintenance) stateText = 'Kugelhahn offen';
+      else if (z.open && z.until) stateText = '<span data-zone-until="' + z.until + '">läuft</span>';
+      else if (z.open) stateText = 'läuft';
+      else if (z.manual) stateText = 'öffnet …';
+      else stateText = z.next && z.next !== '–' ? 'Nächste: ' + esc(z.next) : 'Kein Termin geplant';
+
+      const btn = lock ? '' : active
+        ? '<button class="btn stop" data-zone="' + z.idx + '" data-on="0"' + (busy ? ' aria-busy="true"' : '') + '>Stoppen</button>'
+        : '<button class="btn go" data-zone="' + z.idx + '" data-on="1"' + (busy ? ' aria-busy="true"' : '') + '>Starten</button>';
+      const stepper = '<div class="stepper" role="group" aria-label="Dauer ' + esc(z.name) + '">'
+        + '<button data-dur="' + z.idx + '" data-delta="-5" aria-label="5 Minuten weniger"' + (z.minutes <= 1 ? ' disabled' : '') + '>−</button>'
+        + '<output>' + z.minutes + ' min</output>'
+        + '<button data-dur="' + z.idx + '" data-delta="5" aria-label="5 Minuten mehr"' + (z.minutes >= 240 ? ' disabled' : '') + '>+</button></div>';
+      const fill = watering && z.since && z.until ? ' style="--level:100%" data-since="' + z.since + '" data-until="' + z.until + '"' : '';
+      return '<article class="zone' + (watering ? ' open' : '') + (z.usable ? '' : ' unusable') + '"' + fill + '>'
+        + (watering ? '<div class="fill" aria-hidden="true"></div>' : '')
+        + '<div><h3>' + esc(z.name) + '</h3><p class="state">' + stateText + '</p></div>'
+        + (z.usable ? '<div class="row">' + stepper + btn + '</div>' : '')
+        + '</article>';
+    }).join(''));
+  }
+
+  function renderPlan(s) {
+    const plan = $('plan');
+    if (plan.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+    setHTML(plan, s.sequences.map((q) => {
+      const running = s.sequence === q.n;
+      const disabled = !q.rows;
+      const startDisabled = disabled || !s.master || s.maintenance || running;
+      return '<div class="seq' + (q.auto ? '' : ' disabled') + '">'
+        + '<div><div class="name">' + esc(q.name) + '</div><div class="meta">' + (q.rows ? q.rows + (q.rows === 1 ? ' Zone' : ' Zonen') : 'keine Zonen eingetragen') + '</div></div>'
+        + '<input type="time" value="' + esc(q.start) + '" data-time="' + q.n + '" aria-label="Startzeit ' + esc(q.name) + '">'
+        + '<button class="toggle" role="switch" aria-checked="' + q.auto + '" data-auto="' + q.n + '" aria-label="Automatik ' + esc(q.name) + '"><span class="knob"></span><span>Automatik</span></button>'
+        + '<button class="btn start" data-seq-start="' + q.n + '"' + (startDisabled ? ' disabled' : '') + '>' + (running ? 'Läuft' : 'Jetzt starten') + '</button>'
+        + '</div>';
+    }).join(''));
+  }
+
+  function renderStats(s) {
+    const st = s.stats;
+    const grid = '<div class="stats-grid">'
+      + '<div><b>' + num(st.runtimeDay) + ' min</b><span>Pumpe heute</span></div>'
+      + '<div><b>' + num(st.runtimeTotal, 1) + ' h</b><span>Pumpe gesamt</span></div>'
+      + (st.hasFlow ? '<div><b>' + num(st.waterLast, 0) + ' l</b><span>Wasser letzter Lauf</span></div>'
+        + '<div><b>' + num(st.waterTotal / 1000, 2) + ' m³</b><span>Wasser gesamt</span></div>' : '')
+      + '</div>';
+    const cycles = '<table class="cycles"><tbody>' + s.valves.map((v) => '<tr><td>' + esc(v.name) + '</td><td>' + num(v.cycles) + ' Zyklen</td></tr>').join('') + '</tbody></table>';
+    setHTML($('stats-body'), grid + cycles);
+  }
+
+  // ---- Sekündliche Anzeige (Restzeit, Wasserstand) --------------------------
+  function tick() {
+    const t = now();
+    document.querySelectorAll('[data-until].value').forEach((el) => { el.textContent = duration(+el.dataset.until - t); });
+    document.querySelectorAll('[data-zone-until]').forEach((el) => { el.textContent = 'noch ' + duration(+el.dataset.zoneUntil - t); });
+    document.querySelectorAll('.zone[data-since]').forEach((el) => {
+      const since = +el.dataset.since, until = +el.dataset.until;
+      const level = until > since ? Math.min(100, Math.max(4, (until - t) / (until - since) * 100)) : 0;
+      el.style.setProperty('--level', level.toFixed(1) + '%');
+    });
+    document.querySelectorAll('[data-progress-until]').forEach((el) => {
+      const from = +el.dataset.from, until = +el.dataset.progressUntil;
+      const p = until > from ? (t - from) / (until - from) * 100 : 100;
+      el.style.setProperty('--p', Math.min(100, Math.max(0, p)).toFixed(1) + '%');
+    });
+  }
+  setInterval(tick, 1000);
+
+  // ---- Bedienung ------------------------------------------------------------
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || b.disabled || !state) return;
+    const d = b.dataset;
+    if (b.id === 'master') act('Active', !state.master);
+    else if (b.id === 'maintenance' || d.action === 'maintenance-off') act('Maintenance', !state.maintenance);
+    else if (d.action === 'master-on') act('Active', true);
+    else if (d.action === 'stop') act('SeqControl', 0, 'stop');
+    else if (d.zone !== undefined) act('ManualZ' + d.zone, d.on === '1', 'Z' + d.zone);
+    else if (d.valve !== undefined) act('ServiceV' + d.valve, b.getAttribute('aria-pressed') !== 'true', 'V' + d.valve);
+    else if (d.seqStart !== undefined) act('SeqControl', +d.seqStart);
+    else if (d.auto !== undefined) act('Auto' + d.auto, b.getAttribute('aria-checked') !== 'true');
+    else if (d.dur !== undefined) {
+      const z = state.zones.find((x) => x.idx === +d.dur);
+      const step = +d.delta;
+      const next = Math.min(240, Math.max(1, z.minutes === 1 && step > 0 ? 5 : z.minutes + step));
+      z.minutes = next;
+      render();
+      act('ManualDurationZ' + d.dur, next);
+    }
+  });
+
+  document.addEventListener('change', (e) => {
+    const el = e.target;
+    if (el.dataset && el.dataset.time && /^\d{2}:\d{2}$/.test(el.value)) {
+      const seq = state && state.sequences.find((q) => q.n === +el.dataset.time);
+      if (!seq || seq.start === el.value) return;
+      seq.start = el.value;
+      act('StartTime' + el.dataset.time, el.value);
+      el.blur();
+    }
+  });
+})();
+</script>
+</body>
+</html>

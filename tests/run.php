@@ -561,5 +561,39 @@ run($m, 30);
 check('Zone direkt nach einer Wiederholung gestoppt: Pumpe startet nicht erneut', events($t, $t) === 'P@0=0 V1@7=0', events($t, $t));
 noViolations();
 
+section('22 Kachel-Visualisierung');
+$m = setup([row(valve(1), 5)], [], null, false);
+$html = $m->GetVisualizationTile();
+check('Kachel enthält Oberfläche und Startzustand', str_contains($html, '<title>Bewässerung</title>') && preg_match('/handleMessage\((".*")\);<\/script>$/s', $html, $mm) === 1);
+$state = json_decode(json_decode($mm[1]), true);
+check('Zustand vollständig', is_array($state) && count($state['zones']) === 6 && count($state['sequences']) === 4 && count($state['valves']) === 7 && $state['master'] === true, json_encode(array_keys($state ?? [])));
+run($m, 70); // Vorschau-Texte werden minütlich berechnet
+$m->visu = [];
+run($m, 600);
+$diff = [];
+if ($m->visu) {
+    $diff = array_keys(array_diff_assoc(array_map('json_encode', json_decode($m->visu[0], true)), array_map('json_encode', $state)));
+}
+check('ohne Änderung keine Aktualisierung (10 min Leerlauf)', count($m->visu) === 0, count($m->visu) . ' x, geändert: ' . implode(',', $diff));
+Sim::$t = T0;
+$m->RequestAction('ManualZ0', true);
+$last = json_decode(end($m->visu), true);
+check('Zonenstart wird sofort gemeldet', $last['zones'][0]['open'] === true && $last['zones'][0]['until'] === T0 + 7 + 600 + 7 && $last['busy'] === true, json_encode($last['zones'][0]));
+check('Start und Ende des Laufs', $last['startedAt'] === T0 && $last['endsAt'] === T0 + 614, $last['startedAt'] . ' / ' . $last['endsAt']);
+$m->RequestAction('Active', false);
+run($m, 10);
+$m->RequestAction('ManualZ1', true);
+$last = json_decode(end($m->visu), true);
+check('Ablehnung kommt als Hinweis', ($last['notice']['text'] ?? '') !== '' && str_contains($last['notice']['text'], 'Master-Schalter'), json_encode($last['notice']));
+$id = $last['notice']['id'];
+$m->RequestAction('ManualZ1', true);
+check('gleiche Ablehnung erneut: neuer Hinweis', json_decode(end($m->visu), true)['notice']['id'] === $id + 1);
+$m->RequestAction('Active', true);
+$m->RequestAction('StartTime2', '20:15');
+check('Startzeit als "HH:MM" aus der Kachel', date('H:i', val($m, 'StartTime2')) === '20:15' && json_decode(end($m->visu), true)['sequences'][1]['start'] === '20:15');
+$m->RequestAction('ManualDurationZ0', 999);
+check('Dauer aus der Kachel begrenzt (240 min)', val($m, 'ManualDurationZ0', 'ManualDurCategory') === 240);
+check('"Als Nächstes" im Ruhezustand', json_decode(end($m->visu), true)['upcoming'] === null || is_array(json_decode(end($m->visu), true)['upcoming']));
+
 echo "\nErgebnis: $pass bestanden, $fail fehlgeschlagen\n";
 exit($fail === 0 ? 0 : 1);

@@ -30,6 +30,8 @@ Rasen-Zusammenlegung mehrerer physischer Zonen zu einem logischen Kreis.
 - Optionale Anzeige von Pumpen-Rückmeldung, Wasserdruck und Durchfluss
 - Restlaufzeit, Pumpenlaufzeit (heute/gesamt), Wasserverbrauch (letzter
   Lauf/gesamt), Zyklenzähler je Kugelhahn, nächste Laufzeit je Kreis
+- **Eigene Bedienoberfläche** als Kachel für die Kachel-Visualisierung,
+  parallel zum klassischen WebFront nutzbar
 
 ### Schaltschema
 
@@ -138,6 +140,35 @@ Unterkategorien:
   Wasserverbrauch letzte Laufzeit/gesamt
 - **Wartung – Kugelhähne**: ein Schalter je physischem Kugelhahn, nur im
   Wartungsmodus sichtbar
+
+## Bedienoberfläche (Kachel)
+
+Neben den WebFront-Variablen bringt das Modul eine eigene Oberfläche mit,
+die in der **Kachel-Visualisierung** von IP-Symcon läuft – im Browser und
+in der Symcon-App, parallel zum klassischen WebFront. Einrichtung: in der
+Kachel-Visualisierung eine Kachel hinzufügen und die Instanz
+„Bewaesserungssteuerung" auswählen. Am klassischen WebFront ändert sich
+nichts; beide Oberflächen zeigen denselben Zustand.
+
+Die Oberfläche zeigt:
+
+- **Jetzt**: was gerade bewässert wird, mit Restzeit, Endzeit und
+  „Alles stoppen" – im Ruhezustand den nächsten Termin mit den Zonen,
+  bei ausgeschalteter Anlage bzw. im Wartungsmodus die passende Bedienung
+- **Messwerte**: Druck, Durchfluss, Pumpe (Rückmeldung) und Pumpenlaufzeit
+  heute – nur die konfigurierten Sensoren
+- **Zonen**: je Zone Zustand, nächster Termin, manuelle Dauer (±5 min) und
+  Starten/Stoppen. Eine laufende Zone füllt sich mit Wasser, das mit der
+  Restzeit sinkt. Gesperrte Bedienung wird ausgeblendet und begründet
+- **Zeitplan**: Startzeit, Automatik und Sofortstart je Sequenz
+- **Wartung**: im Wartungsmodus ein Schalter je Kugelhahn
+- **Statistik**: Laufzeiten, Wasserverbrauch, Zyklen je Kugelhahn
+
+Abgelehnte Bedienungen erscheinen kurz als Hinweis am unteren Rand.
+Die Kachel passt sich der Größe an (vom schmalen Handy bis zum Tablet),
+folgt dem hellen bzw. dunklen Modus des Geräts und lädt nichts aus dem
+Internet. Das Modul sendet nur bei Änderungen eine Aktualisierung; Restzeit
+und Wasserstand zählt die Kachel selbst sekündlich herunter.
 
 ## Wartungsmodus (Leitungen ausblasen)
 

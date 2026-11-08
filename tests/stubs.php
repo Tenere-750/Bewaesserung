@@ -281,6 +281,9 @@ class IPSModule
     protected function SetValue(string $i, $v) { Sim::$writes++; Sim::$obj[Sim::child($this->InstanceID, $i)]['value'] = $v; return true; }
     protected function GetValue(string $i) { return Sim::$obj[Sim::child($this->InstanceID, $i)]['value']; }
     protected function SetStatus(int $s) { $this->status = $s; }
+    public array $visu = [];
+    protected function SetVisualizationType(int $t) {}
+    protected function UpdateVisualizationValue(string $v) { $this->visu[] = $v; }
     protected function LogMessage(string $m, int $l) { $this->log[] = [Sim::$t, $l, $m]; }
 }
 

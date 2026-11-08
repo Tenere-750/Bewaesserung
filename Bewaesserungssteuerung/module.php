@@ -96,6 +96,7 @@ class Bewaesserungssteuerung extends IPSModule
         $this->ensureProfile('BWS.Flow', VARIABLETYPE_FLOAT, ' l/min', 1);
         $this->ensureProfile('BWS.Liters', VARIABLETYPE_FLOAT, ' l', 2);
 
+        $this->SetVisualizationType(1); // eigene Kachel (HTML-SDK), siehe visualization.html
         $this->RegisterTimer('Queue', 0, 'BWS_ProcessQueue($_IPS[\'TARGET\']);');
         $this->RegisterTimer('Schedule', 0, 'BWS_CheckSchedule($_IPS[\'TARGET\']);');
         $this->RegisterMessage(0, IPS_KERNELMESSAGE);
@@ -135,6 +136,7 @@ class Bewaesserungssteuerung extends IPSModule
         $this->updateWaterDisplay();
         $this->updateRemainingDisplay();
         $this->updateNextRunDisplays(true);
+        $this->pushVisualization();
     }
 
     public function MessageSink($TimeStamp, $SenderID, $Message, $Data)
@@ -147,6 +149,12 @@ class Bewaesserungssteuerung extends IPSModule
     }
 
     public function RequestAction($Ident, $Value)
+    {
+        $this->handleAction((string)$Ident, $Value);
+        $this->pushVisualization();
+    }
+
+    private function handleAction(string $Ident, $Value): void
     {
         switch (true) {
             case $Ident === 'Active':
@@ -168,27 +176,30 @@ class Bewaesserungssteuerung extends IPSModule
                 }
                 return;
 
-            case preg_match('/^(Auto|StartTime)([1-4])$/', (string)$Ident, $m) === 1:
+            case preg_match('/^(Auto|StartTime)([1-4])$/', $Ident, $m) === 1:
+                if ($m[1] === 'StartTime' && is_string($Value) && $this->isTime($Value)) {
+                    $Value = (int)strtotime($Value, $this->now()); // Kachel sendet "HH:MM"
+                }
                 $this->SetValue($Ident, $m[1] === 'Auto' ? (bool)$Value : (int)$Value);
                 $this->withLock(fn () => $this->skipPassedSlot((int)$m[2]));
                 $this->updateSequenceOrder();
                 $this->updateNextRunDisplays(true);
                 return;
 
-            case preg_match('/^ManualZ(\d+)$/', (string)$Ident, $m) === 1:
+            case preg_match('/^ManualZ(\d+)$/', $Ident, $m) === 1:
                 $idx = (int)$m[1];
                 $this->report($this->withLock(fn () => $Value ? $this->startManualLocked($idx) : $this->stopManualLocked($idx)));
                 return;
 
-            case preg_match('/^ServiceV(\d+)$/', (string)$Ident, $m) === 1:
+            case preg_match('/^ServiceV(\d+)$/', $Ident, $m) === 1:
                 $phys = (int)$m[1];
                 $this->report($this->withLock(fn () => $this->serviceValveLocked($phys, (bool)$Value)));
                 return;
 
-            case preg_match('/^ManualDurationZ\d+$/', (string)$Ident) === 1:
+            case preg_match('/^ManualDurationZ\d+$/', $Ident) === 1:
                 $id = $this->catVarID('ManualDurCategory', $Ident);
                 if ($id > 0) {
-                    SetValue($id, max(1, (int)$Value));
+                    SetValue($id, min(240, max(1, (int)$Value)));
                 }
                 return;
         }
@@ -751,6 +762,8 @@ class Bewaesserungssteuerung extends IPSModule
         $this->setIfChanged('Status', $message);
         $this->LogMessage($message, KL_NOTIFY);
         $this->syncZoneSwitches();
+        $notice = json_decode($this->GetBuffer('Notice'), true) ?: ['id' => 0];
+        $this->SetBuffer('Notice', json_encode(['id' => $notice['id'] + 1, 'text' => $message]));
     }
 
     // ======================================================================
@@ -827,6 +840,9 @@ class Bewaesserungssteuerung extends IPSModule
     private function enqueue(array $ops, string $src): void
     {
         $plan = $this->readJson('Plan');
+        if (!$plan) {
+            $this->SetBuffer('RunStart', (string)$this->now());
+        }
         foreach ($ops as $op) {
             $plan[] = $op + ['src' => $src];
         }
@@ -1533,12 +1549,7 @@ class Bewaesserungssteuerung extends IPSModule
 
         $zones = $this->zones();
         $lastRun = $this->readJson('LastRun');
-        $slots = [];
-        for ($s = 1; $s <= self::MAX_SEQUENCES; $s++) {
-            if ($this->hasIdent('Auto' . $s) && $this->GetValue('Auto' . $s) && $this->GetValue('StartTime' . $s) > 0) {
-                $slots[$s] = ['hm' => date('H:i', (int)$this->GetValue('StartTime' . $s)), 'rows' => $this->sequenceRows($s)];
-            }
-        }
+        $slots = $this->activeSlots();
         for ($i = 0; $i < self::MAX_ZONES; $i++) {
             $text = isset($zones[$i]) ? $this->nextRunText($zones[$i]['ref'], $slots, $lastRun) : '–';
             $this->setVarIfChanged($this->catVarID('PlanCategory', 'NextRunZ' . $i), $text);
@@ -1546,6 +1557,13 @@ class Bewaesserungssteuerung extends IPSModule
     }
 
     private function nextRunText(int $ref, array $slots, array $lastRun): string
+    {
+        [$best, $bestSeq] = $this->nextRun($ref, $slots, $lastRun) ?? [null, 0];
+        return $best === null ? '–' : $this->dayLabel($best) . ', ' . date('H:i', $best) . ' (' . $this->seqName($bestSeq) . ')';
+    }
+
+    /** Frühester kommender Termin einer Zone: [Zeitpunkt, Sequenz] oder null. */
+    private function nextRun(int $ref, array $slots, array $lastRun): ?array
     {
         $now = $this->now();
         $today = (int)strtotime('today', $now);
@@ -1568,15 +1586,29 @@ class Bewaesserungssteuerung extends IPSModule
                 }
             }
         }
-        if ($best === null) {
-            return '–';
-        }
-        $day = match (date('Y-m-d', $best)) {
-            date('Y-m-d', $now)                        => 'heute',
+        return $best === null ? null : [$best, $bestSeq];
+    }
+
+    private function dayLabel(int $ts): string
+    {
+        $now = $this->now();
+        return match (date('Y-m-d', $ts)) {
+            date('Y-m-d', $now)                           => 'heute',
             date('Y-m-d', (int)strtotime('+1 day', $now)) => 'morgen',
-            default => ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'][(int)date('w', $best)]
+            default => ['Sonntag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag'][(int)date('w', $ts)]
         };
-        return $day . ', ' . date('H:i', $best) . ' (' . $this->seqName($bestSeq) . ')';
+    }
+
+    /** Aktive Sequenzen mit Startzeit und Zeilen, Grundlage der Vorschau. */
+    private function activeSlots(): array
+    {
+        $slots = [];
+        for ($s = 1; $s <= self::MAX_SEQUENCES; $s++) {
+            if ($this->hasIdent('Auto' . $s) && $this->GetValue('Auto' . $s) && $this->GetValue('StartTime' . $s) > 0) {
+                $slots[$s] = ['hm' => date('H:i', (int)$this->GetValue('StartTime' . $s)), 'rows' => $this->sequenceRows($s)];
+            }
+        }
+        return $slots;
     }
 
     // ======================================================================
@@ -1720,6 +1752,7 @@ class Bewaesserungssteuerung extends IPSModule
             return $fn();
         } finally {
             IPS_SemaphoreLeave($name);
+            $this->pushVisualization();
         }
     }
 
@@ -1838,6 +1871,156 @@ class Bewaesserungssteuerung extends IPSModule
             'Name' => $name, 'ValveInstanceID' => 0, 'TravelTime' => self::DEFAULT_TRAVEL, 'DefaultDuration' => 10,
             'Lawn' => str_starts_with($name, 'Rasen'), 'UseSensor' => false, 'SensorID' => 0, 'Threshold' => 60, 'Invert' => false
         ], $names);
+    }
+
+    // ======================================================================
+    // Kachel-Visualisierung (HTML-SDK)
+    // ======================================================================
+
+    /** Liefert die Kachel samt aktuellem Zustand. */
+    public function GetVisualizationTile(): string
+    {
+        $html = (string)file_get_contents(__DIR__ . '/visualization.html');
+        return $html . '<script>handleMessage(' . json_encode(json_encode($this->visualizationState())) . ');</script>';
+    }
+
+    /** Sendet den Zustand an geöffnete Kacheln, sofern er sich geändert hat. */
+    private function pushVisualization(): void
+    {
+        $state = $this->visualizationState();
+        $key = md5(json_encode(array_diff_key($state, ['now' => 0])));
+        if ($this->GetBuffer('VisuHash') === $key) {
+            return;
+        }
+        $this->SetBuffer('VisuHash', $key);
+        $this->UpdateVisualizationValue(json_encode($state));
+    }
+
+    private function visualizationState(): array
+    {
+        if (!$this->hasIdent('Status')) {
+            return [];
+        }
+        $now = $this->now();
+        $open = $this->openValves();
+        $plan = $this->readJson('Plan');
+        $manual = $this->readJson('Manual');
+
+        // Schließzeitpunkt je Ventil (nächstes geplantes "Ventil zu")
+        $closeAt = [];
+        foreach ($plan as $op) {
+            if ($op['op'] === 'valve' && !$op['on'] && !isset($closeAt[$op['id']])) {
+                $closeAt[$op['id']] = $op['at'];
+            } elseif ($op['op'] === 'close') {
+                foreach ($this->zones()[$this->findZone((int)$op['ref']) ?? -1]['valves'] ?? [] as $v) {
+                    $closeAt[$v['id']] ??= $op['at'] + $v['travel'];
+                }
+            }
+        }
+
+        $slots = $this->activeSlots();
+        $lastRun = $this->readJson('LastRun');
+        $upcoming = null;
+        $zones = [];
+        foreach ($this->zones() as $i => $z) {
+            $next = $z['usable'] ? $this->nextRun($z['ref'], $slots, $lastRun) : null;
+            if ($next !== null && ($upcoming === null || $next[0] < $upcoming['at'])) {
+                $upcoming = ['at' => $next[0], 'seq' => $next[1], 'zones' => []];
+            }
+            if ($next !== null && $upcoming !== null && $next[0] === $upcoming['at']) {
+                $upcoming['zones'][] = $z['name'];
+            }
+            $ids = array_column($z['valves'], 'id');
+            $openIDs = array_values(array_intersect($ids, array_keys($open)));
+            $since = $until = null;
+            if ($openIDs) {
+                $first = $openIDs[0];
+                $since = $open[$first] - $this->maxTravel([$first]);
+                $until = $closeAt[$first] ?? null;
+            }
+            $durID = $this->catVarID('ManualDurCategory', 'ManualDurationZ' . $i);
+            $nextID = $this->catVarID('PlanCategory', 'NextRunZ' . $i);
+            $zones[] = [
+                'idx'      => $i,
+                'name'     => $z['name'],
+                'lawn'     => $z['lawn'],
+                'usable'   => $z['usable'],
+                'open'     => (bool)$openIDs,
+                'manual'   => in_array($z['ref'], $manual, true),
+                'minutes'  => $durID > 0 ? (int)GetValue($durID) : $z['duration'],
+                'next'     => $nextID > 0 ? (string)GetValue($nextID) : '–',
+                'since'    => $since,
+                'until'    => $until
+            ];
+        }
+
+        $sequences = [];
+        for ($s = 1; $s <= self::MAX_SEQUENCES; $s++) {
+            $ts = (int)$this->GetValue('StartTime' . $s);
+            $sequences[] = [
+                'n'     => $s,
+                'name'  => $this->seqName($s),
+                'auto'  => (bool)$this->GetValue('Auto' . $s),
+                'start' => $ts > 0 ? date('H:i', $ts) : '',
+                'rows'  => count(array_filter($this->sequenceRows($s), fn (array $r): bool => !empty($r['Active'])))
+            ];
+        }
+
+        $valves = [];
+        foreach ($this->physicalZones() as $i => $z) {
+            $valves[] = ['phys' => $i, 'name' => $z['Name'], 'open' => isset($open[$z['ValveInstanceID']]), 'cycles' => (int)$this->statValue('CyclesP' . $i)];
+        }
+
+        $sensor = function (string $property, string $ident) {
+            $id = $this->ReadPropertyInteger($property);
+            return ($id > 0 && IPS_VariableExists($id)) ? $this->GetValue($ident) : null;
+        };
+        $notice = json_decode($this->GetBuffer('Notice'), true);
+
+        return [
+            'now'         => $now,
+            'status'      => (string)$this->GetValue('Status'),
+            'master'      => (bool)$this->GetValue('Active'),
+            'maintenance' => $this->maintenance(),
+            'sequence'    => (int)$this->GetValue('SeqControl'),
+            'busy'        => $this->isBusy(),
+            'startedAt'   => $plan ? ((int)$this->GetBuffer('RunStart') ?: null) : null,
+            'endsAt'      => $plan ? max([...array_column($plan, 'at'), ...array_filter(array_column($zones, 'until'))]) : null,
+            'upcoming'    => $upcoming === null ? null : [
+                'at'    => $upcoming['at'],
+                'day'   => $this->dayLabel($upcoming['at']),
+                'time'  => date('H:i', $upcoming['at']),
+                'name'  => $this->seqName($upcoming['seq']),
+                'zones' => $upcoming['zones']
+            ],
+            'pump'        => $this->ReadAttributeInteger('PumpOnSince') > 0,
+            'pumpFeedback' => $sensor('PumpStatusID', 'PumpStatus'),
+            'pressure'    => $sensor('PressureSensorID', 'Pressure'),
+            'flow'        => $sensor('FlowSensorID', 'Flow'),
+            'maxParallel' => $this->maxParallel(),
+            'zones'       => $zones,
+            'sequences'   => $sequences,
+            'valves'      => $valves,
+            'stats'       => [
+                'runtimeDay'   => (int)$this->statValue('RuntimeDay'),
+                'runtimeTotal' => (float)$this->statValue('RuntimeTotal'),
+                'waterLast'    => (float)$this->statValue('WaterLastRun'),
+                'waterTotal'   => (float)$this->statValue('WaterTotal'),
+                'hasFlow'      => $sensor('FlowSensorID', 'Flow') !== null
+            ],
+            'notice'      => is_array($notice) ? $notice : null
+        ];
+    }
+
+    private function statValue(string $ident)
+    {
+        $id = $this->statVarID($ident);
+        return $id > 0 ? GetValue($id) : 0;
+    }
+
+    private function isTime(string $value): bool
+    {
+        return preg_match('/^([01]?\d|2[0-3]):[0-5]\d$/', $value) === 1;
     }
 
     // ======================================================================
