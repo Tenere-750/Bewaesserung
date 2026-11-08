@@ -135,14 +135,17 @@ function idle(): bool
     return !Sim::openValves() && empty(Sim::$state[PUMP]);
 }
 
-function rejects(callable $fn): string
+/** Führt eine Bedienung aus und liefert die gemeldete Ablehnung ('' = ausgeführt). Exceptions sind ein Fehler. */
+function rejects(IPSModule $m, callable $fn): string
 {
+    $before = count($m->log);
     try {
         $fn();
-        return '';
     } catch (Throwable $e) {
-        return $e->getMessage();
+        return 'EXCEPTION: ' . $e->getMessage();
     }
+    $messages = array_column(array_filter(array_slice($m->log, $before), fn ($l) => $l[1] === KL_NOTIFY), 2);
+    return implode(' | ', $messages);
 }
 
 function logged(IPSModule $m, int $level, string $needle): bool
@@ -203,12 +206,12 @@ $m->RequestAction('ManualZ0', true);
 run($m, 2);
 $m->RequestAction('ManualZ1', true);
 run($m, 2);
-check('3. Zone abgelehnt', str_contains(rejects(fn () => $m->RequestAction('ManualZ2', true)), 'Maximal 2'));
+check('3. Zone abgelehnt', str_contains(rejects($m, fn () => $m->RequestAction('ManualZ2', true)), 'Maximal 2'));
 run($m, 2);
 $m->RequestAction('ManualZ0', false);
-check('3. Zone abgelehnt, solange Zone 1 noch schließt', str_contains(rejects(fn () => $m->RequestAction('ManualZ2', true)), 'Maximal 2'));
+check('3. Zone abgelehnt, solange Zone 1 noch schließt', str_contains(rejects($m, fn () => $m->RequestAction('ManualZ2', true)), 'Maximal 2'));
 run($m, 10);
-check('danach angenommen', rejects(fn () => $m->RequestAction('ManualZ2', true)) === '');
+check('danach angenommen', rejects($m, fn () => $m->RequestAction('ManualZ2', true)) === '');
 run($m, 30);
 $m->RequestAction('ManualZ1', false);
 run($m, 5);
@@ -250,7 +253,7 @@ $m = setup([], [], null, false);
 SetValue(varID($m, 'ManualDurationZ5', 'ManualDurCategory'), 1);
 Sim::$t = T0;
 $m->RequestAction('ManualZ5', true);
-check('andere Zone während Rasen abgelehnt', str_contains(rejects(fn () => $m->RequestAction('ManualZ0', true)), 'Rasen'));
+check('andere Zone während Rasen abgelehnt', str_contains(rejects($m, fn () => $m->RequestAction('ManualZ0', true)), 'Rasen'));
 run($m, 200);
 check('Kette rechts/links mit Überlapp', events(T0) === 'V6@0=1 P@7=1 V7@67=1 V6@77=0 P@137=0 V7@144=0', events(T0));
 check('danach frei', val($m, 'ManualZ5') === false && $m->attrs['Manual'] === '[]');
@@ -258,7 +261,7 @@ noViolations();
 $m = setup([], [], null, false);
 Sim::$t = T0;
 $m->RequestAction('ManualZ0', true);
-check('Rasen abgelehnt, solange eine andere Zone läuft', str_contains(rejects(fn () => $m->RequestAction('ManualZ5', true)), 'exklusiv'));
+check('Rasen abgelehnt, solange eine andere Zone läuft', str_contains(rejects($m, fn () => $m->RequestAction('ManualZ5', true)), 'exklusiv'));
 $m = setup([], [], null, false);
 SetValue(varID($m, 'ManualDurationZ5', 'ManualDurCategory'), 1);
 Sim::$t = T0;
@@ -276,7 +279,7 @@ $m = setup([row(29999)], [], function (array &$rows): void {
 check('Statuscode 202', $m->status === 202, (string)$m->status);
 run($m, 3600 + 60);
 check('Sequenz überspringt die Zone, Pumpe bleibt aus', empty(Sim::$state[PUMP]) && str_contains(val($m, 'Status'), 'nicht konfiguriert'), val($m, 'Status'));
-check('manueller Start abgelehnt', str_contains(rejects(fn () => $m->RequestAction('ManualZ0', true)), 'kein gültiges Ventil'));
+check('manueller Start abgelehnt', str_contains(rejects($m, fn () => $m->RequestAction('ManualZ0', true)), 'kein gültiges Ventil'));
 check('Pumpe wurde nie eingeschaltet', !array_filter(Sim::$knx, fn ($e) => $e[1] === PUMP && $e[2]));
 
 section('8  KNX-Fehler');
@@ -434,6 +437,109 @@ $m = setup([], [], function (array &$rows): void {
     $rows[1]['ValveInstanceID'] = $rows[0]['ValveInstanceID'];
 });
 check('doppelte Ventil-Instanz -> Status 203', $m->status === 203);
+
+section('19 Master-Schalter aus: keine Fehler, verständliche Rückmeldung');
+$m = setup([row(valve(1))], [], null, false);
+Sim::$t = T0;
+$m->RequestAction('Active', false);
+$msg = rejects($m, fn () => $m->RequestAction('ManualZ0', true));
+check('Zone einschalten: keine Exception, Hinweis auf Wartungsmodus', !str_starts_with($msg, 'EXCEPTION') && str_contains($msg, 'Wartungsmodus'), $msg);
+$switchedOn = fn () => (bool)array_filter(Sim::$knx, fn ($e) => $e[2]);
+check('Hinweis steht im Status, Schalter bleibt aus, nichts eingeschaltet', str_contains(val($m, 'Status'), 'Master-Schalter ist aus') && val($m, 'ManualZ0') === false && !$switchedOn());
+check('Rasen einschalten: keine Exception', !str_starts_with(rejects($m, fn () => $m->RequestAction('ManualZ5', true)), 'EXCEPTION'));
+check('Zone ausschalten: keine Exception', rejects($m, fn () => $m->RequestAction('ManualZ0', false)) === '');
+check('Sequenz starten: keine Exception, nichts eingeschaltet', !str_starts_with(rejects($m, fn () => $m->RequestAction('SeqControl', 1)), 'EXCEPTION') && !$switchedOn());
+$m = setup([], [], null, false);
+Sim::$t = T0;
+$m->RequestAction('ManualZ0', true);
+run($m, 20);
+$m->RequestAction('Active', false);
+$msg = rejects($m, fn () => $m->RequestAction('ManualZ0', true));
+check('Zone wieder einschalten, während sie nach Master aus schließt: keine Exception', !str_starts_with($msg, 'EXCEPTION') && $msg !== '', $msg);
+run($m, 30);
+check('Master aus: Pumpe aus -> 7 s -> Ventil zu', events(T0) === 'V1@0=1 P@7=1 P@20=0 V1@27=0', events(T0));
+noViolations();
+$m = setup([row(valve(1), 5)]);
+run($m, 3600 + 30);
+$msg = rejects($m, fn () => $m->RequestAction('ManualZ0', false));
+check('Zonen-Schalter während Sequenz: keine Exception, Hinweis', !str_starts_with($msg, 'EXCEPTION') && str_contains($msg, 'Sequenz'), $msg);
+
+$m = setup([row(valve(1))]);
+$m->RequestAction('Active', false);
+Sim::$t = T0 - 5;
+run($m, 300);
+$m->RequestAction('Active', true);
+run($m, 300);
+check('Termin bei Master aus verfällt (kein Nachholen nach dem Einschalten)', idle() && !array_filter(Sim::$knx, fn ($e) => $e[2]));
+
+section('20 Wartungsmodus (Leitungen ausblasen)');
+$m = setup([row(valve(1), 5), row(valve(2), 5)]);
+$fb = Sim::create(1, 'fb', 'Pumpe Rückmeldung', true);
+$m->props['PumpStatusID'] = $fb;
+$m->ApplyChanges();
+run($m, 3600 + 60);
+$t = Sim::$t;
+$m->RequestAction('Maintenance', true);
+SetValue($fb, false);
+Sim::$allowManyOpen = true;
+check('laufende Sequenz geordnet beendet: Pumpe sofort aus', events($t, $t) === 'P@0=0' && val($m, 'SeqControl') === 0, events($t, $t));
+check('Wartungs-Schalter erst nach dem Abschalten bedienbar', str_contains(rejects($m, fn () => $m->RequestAction('ServiceV0', true)), 'warten'));
+run($m, 10);
+check('Ventil nach Verfahrzeit zu, Status "Wartungsmodus aktiv"', events($t, $t) === 'P@0=0 V1@7=0' && str_starts_with(val($m, 'Status'), 'Wartungsmodus aktiv'), events($t, $t) . ' / ' . val($m, 'Status'));
+check('Wartungs-Kategorie sichtbar', empty(Sim::$hidden[Sim::child($m->InstanceID, 'MaintenanceCategory')]));
+$t = Sim::$t;
+foreach ([0, 1, 2, 5, 6] as $phys) {
+    $m->RequestAction('ServiceV' . $phys, true);
+}
+$opened = array_map(fn ($id) => Sim::label($id), Sim::openValves());
+check('Kugelhähne einzeln schaltbar, auch mehr als 2 und Rasen-Teilventile', $opened === ['V1', 'V2', 'V3', 'V6', 'V7'], json_encode($opened));
+check('Wartungs-Schalter zeigen den Zustand', val($m, 'ServiceV0', 'MaintenanceCategory') === true && val($m, 'ServiceV3', 'MaintenanceCategory') === false);
+check('Zyklen werden gezählt', val($m, 'CyclesP0', 'StatsCategory') === 2);
+run($m, 600);
+check('Pumpe bleibt aus (10 min, inkl. Überwachung)', !array_filter(Sim::$knx, fn ($e) => $e[0] >= $t && $e[1] === PUMP && $e[2]));
+check('Pumpe wird regelmäßig ausgeschaltet', count(array_filter(Sim::$knx, fn ($e) => $e[0] >= $t && $e[1] === PUMP && !$e[2])) >= 9);
+check('Ventile bleiben offen (kein Zeitlimit)', count(Sim::openValves()) === 5);
+check('normale Zonen-Schalter gesperrt', str_contains(rejects($m, fn () => $m->RequestAction('ManualZ3', true)), 'Wartungsmodus'));
+check('Sequenzstart gesperrt', !str_starts_with(rejects($m, fn () => $m->RequestAction('SeqControl', 1)), 'EXCEPTION') && str_contains(val($m, 'Status'), 'Wartungsmodus'));
+Sim::$t = T0 + 86400 - 5;
+run($m, 30);
+check('Automatik startet im Wartungsmodus nicht', count(Sim::openValves()) === 5 && val($m, 'SeqControl') === 0);
+SetValue($fb, true);
+$n = count(Sim::$knx);
+run($m, 10);
+check('Rückmeldung "Pumpe an" -> sofort Aus-Befehl', (bool)array_filter(array_slice(Sim::$knx, $n), fn ($e) => $e[1] === PUMP && !$e[2]) && logged($m, KL_WARNING, 'Wartungsmodus AN'));
+SetValue($fb, false);
+$m->RequestAction('Active', false);
+check('Master aus im Wartungsmodus schließt die Kugelhähne nicht', count(Sim::openValves()) === 5);
+$m->RequestAction('Active', true);
+$m->RequestAction('ServiceV1', false);
+check('einzelnen Kugelhahn schließen', !in_array(valve(2), Sim::openValves(), true));
+$t = Sim::$t;
+$m->RequestAction('Maintenance', false);
+Sim::$allowManyOpen = false;
+run($m, 600);
+check('Wartungsmodus aus: alle Kugelhähne zu, Pumpe aus, Sequenz von 06:00 nicht nachgeholt', idle() && !array_filter(Sim::$knx, fn ($e) => $e[0] >= $t && $e[1] === PUMP && $e[2]) && val($m, 'Status') === 'Bereit', events($t, $t));
+check('Wartungs-Schalter danach außerhalb des Modus gesperrt', str_contains(rejects($m, fn () => $m->RequestAction('ServiceV0', true)), 'nur im Wartungsmodus') && idle());
+$t = Sim::$t;
+$m->RequestAction('ManualZ0', true);
+run($m, 10);
+check('danach normaler Betrieb mit Pumpe', events($t, $t) === 'V1@0=1 P@7=1', events($t, $t));
+noViolations();
+$m->StopAll();
+run($m, 10);
+
+$m = setup([], [], null, false);
+Sim::$t = T0;
+$m->RequestAction('Maintenance', true);
+run($m, 2);
+$m->RequestAction('ServiceV0', true);
+restart($m);
+Sim::$runlevel = KR_READY;
+$t = Sim::$t;
+$m->MessageSink($t, 0, IPS_KERNELMESSAGE, [KR_READY]);
+run($m, 30);
+check('Neustart im Wartungsmodus: Kugelhähne zu, Modus bleibt aktiv', idle() && val($m, 'Maintenance') === true && !array_filter(Sim::$knx, fn ($e) => $e[0] >= $t && $e[1] === PUMP && $e[2]));
+check('Skriptfunktion BWS_SetMaintenance', (function () use ($m) { $m->SetMaintenance(false); return val($m, 'Maintenance') === false; })());
 
 echo "\nErgebnis: $pass bestanden, $fail fehlgeschlagen\n";
 exit($fail === 0 ? 0 : 1);

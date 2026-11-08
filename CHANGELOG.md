@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.1.0
+
+- **Wartungsmodus** (WebFront-Schalter bzw. `BWS_SetMaintenance`): beendet
+  eine laufende Bewässerung geordnet, sperrt die Pumpe und macht jeden
+  physischen Kugelhahn einzeln schaltbar – zum Ausblasen der Leitungen.
+  Automatik und Zonen-Schalter sind gesperrt, beim Verlassen schließen
+  alle Kugelhähne.
+- **Master-Schalter aus**: Eine Zone einzuschalten erzeugt keinen Fehler
+  mehr. Abgelehnte Bedienungen (Master aus, Sequenz läuft, Grenze
+  erreicht, kein Ventil, Steuerung beschäftigt) erscheinen mit Begründung
+  im Status und im Meldungsfenster, statt eine Exception auszulösen.
+- Automatik-Termine bei ausgeschaltetem Master-Schalter oder im
+  Wartungsmodus verfallen und werden nach dem Wiedereinschalten nicht
+  nachgeholt.
+
 ## 4.0.0
 
 Überarbeitung mit Schwerpunkt Robustheit. Bedienung, Variablen-Idents,

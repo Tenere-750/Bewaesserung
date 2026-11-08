@@ -11,6 +11,9 @@ declare(strict_types=1);
  *   Ausschalten:  Pumpe aus -> Verfahrzeit -> Ventil zu
  *   Höchstens zwei Ventile sind gleichzeitig offen, die Pumpe läuft nie ohne offenes Ventil.
  *
+ * Wartungsmodus
+ *   Pumpe gesperrt, Kugelhähne einzeln schaltbar (z. B. Leitungen ausblasen).
+ *
  * Ablaufsteuerung
  *   Jeder Schaltschritt steht mit absolutem Fälligkeitszeitpunkt in einer
  *   persistenten Warteschlange (Attribut "Plan"), die der Timer "Queue"
@@ -148,9 +151,13 @@ class Bewaesserungssteuerung extends IPSModule
         switch (true) {
             case $Ident === 'Active':
                 $this->SetValue('Active', (bool)$Value);
-                if (!$Value) {
+                if (!$Value && !$this->maintenance()) {
                     $this->StopAll();
                 }
+                return;
+
+            case $Ident === 'Maintenance':
+                $this->SetMaintenance((bool)$Value);
                 return;
 
             case $Ident === 'SeqControl':
@@ -170,7 +177,12 @@ class Bewaesserungssteuerung extends IPSModule
 
             case preg_match('/^ManualZ(\d+)$/', (string)$Ident, $m) === 1:
                 $idx = (int)$m[1];
-                $this->withLock(fn () => $Value ? $this->startManualLocked($idx) : $this->stopManualLocked($idx), true);
+                $this->report($this->withLock(fn () => $Value ? $this->startManualLocked($idx) : $this->stopManualLocked($idx)));
+                return;
+
+            case preg_match('/^ServiceV(\d+)$/', (string)$Ident, $m) === 1:
+                $phys = (int)$m[1];
+                $this->report($this->withLock(fn () => $this->serviceValveLocked($phys, (bool)$Value)));
                 return;
 
             case preg_match('/^ManualDurationZ\d+$/', (string)$Ident) === 1:
@@ -197,25 +209,39 @@ class Bewaesserungssteuerung extends IPSModule
             $this->SetValue('Status', 'Master-Schalter aus – Start abgebrochen');
             return;
         }
+        if ($this->maintenance()) {
+            $this->SetValue('Status', 'Wartungsmodus aktiv – Sequenz nicht gestartet');
+            return;
+        }
         // Netzwerkabfrage bewusst außerhalb der Sperre
         if ($this->wuRainBlocks($reason)) {
             $this->SetValue('Status', $this->seqName($Sequence) . ': Start wegen Regen unterbunden');
             $this->LogMessage($this->seqName($Sequence) . ' nicht gestartet – ' . $reason, KL_NOTIFY);
             return;
         }
-        $this->withLock(fn () => $this->startSequenceLocked($Sequence), true);
+        $this->report($this->withLock(fn () => $this->startSequenceLocked($Sequence) ?? ''));
     }
 
     /** Stoppt alles: Pumpe sofort aus, nach der Verfahrzeit alle offenen Ventile zu. */
     public function StopAll(): void
     {
-        $this->withLock(fn () => $this->shutdownLocked('Bereit'), true);
+        $this->report($this->withLock(fn () => $this->shutdownLocked('Bereit') ?? ''));
+    }
+
+    /**
+     * Wartungsmodus, z. B. zum Ausblasen der Leitungen: Bewässerung wird
+     * geordnet beendet, die Pumpe bleibt gesperrt, jeder Kugelhahn lässt
+     * sich einzeln schalten. Beim Verlassen schließen alle Kugelhähne.
+     */
+    public function SetMaintenance(bool $Enabled): void
+    {
+        $this->report($this->withLock(fn () => $this->setMaintenanceLocked($Enabled) ?? ''));
     }
 
     /** Setzt Pumpenlaufzeit, Gesamt-Wasserverbrauch und Zyklenzähler zurück. */
     public function ResetCounters(): void
     {
-        $this->withLock(function (): void {
+        $this->report($this->withLock(function (): string {
             $this->WriteAttributeInteger('DayAccum', 0);
             $this->WriteAttributeInteger('TotalAccum', 0);
             if ($this->ReadAttributeInteger('PumpOnSince') > 0) {
@@ -227,7 +253,8 @@ class Bewaesserungssteuerung extends IPSModule
             }
             $this->updateRuntimeDisplay();
             $this->updateWaterDisplay();
-        }, true);
+            return '';
+        }));
     }
 
     /** Timer (10 s): Tageswechsel, Überwachung, Anzeigen, Automatikstart. */
@@ -287,7 +314,7 @@ class Bewaesserungssteuerung extends IPSModule
 
     private function startSequenceLocked(int $seq): void
     {
-        if (!$this->GetValue('Active')) {
+        if (!$this->GetValue('Active') || $this->maintenance()) {
             return;
         }
         $label = $this->seqName($seq);
@@ -473,33 +500,35 @@ class Bewaesserungssteuerung extends IPSModule
     /**
      * Liefert eine heute fällige, noch nicht gestartete Sequenz und merkt
      * sie als gestartet vor. Ein verpasster Termin (Last, Neustart) wird
-     * bis START_WINDOW nachgeholt. Eine laufende Sequenz wird nicht
-     * unterbrochen, eine manuelle Bewässerung schon.
+     * bis START_WINDOW nachgeholt; eine laufende Sequenz wird nicht
+     * unterbrochen, eine manuelle Bewässerung schon. Termine bei
+     * ausgeschaltetem Master oder im Wartungsmodus verfallen.
      */
     private function claimDueSequence(): int
     {
-        if (!$this->GetValue('Active') || (int)$this->GetValue('SeqControl') !== 0) {
+        if ((int)$this->GetValue('SeqControl') !== 0) {
             return 0;
         }
+        $blocked = !$this->GetValue('Active') || $this->maintenance();
         $now = $this->now();
         $started = $this->readJson('Started');
-        $best = 0;
-        $bestTs = PHP_INT_MAX;
+        $due = [];
         for ($s = 1; $s <= self::MAX_SEQUENCES; $s++) {
             $slot = $this->slotToday($s);
-            if ($slot === null || ($started[$s] ?? '') === date('Y-m-d H:i', $slot)) {
-                continue;
-            }
-            if ($now >= $slot && $now - $slot < self::START_WINDOW && $slot < $bestTs) {
-                $best = $s;
-                $bestTs = $slot;
+            if ($slot !== null && $now >= $slot && $now - $slot < self::START_WINDOW
+                && ($started[$s] ?? '') !== date('Y-m-d H:i', $slot)) {
+                $due[$s] = $slot;
             }
         }
-        if ($best > 0) {
-            $started[$best] = date('Y-m-d H:i', $bestTs);
-            $this->writeJson('Started', $started);
+        if (!$due) {
+            return 0;
         }
-        return $best;
+        asort($due);
+        foreach ($blocked ? $due : array_slice($due, 0, 1, true) as $s => $slot) {
+            $started[$s] = date('Y-m-d H:i', $slot);
+        }
+        $this->writeJson('Started', $started);
+        return $blocked ? 0 : (int)array_key_first($due);
     }
 
     /** Ein bereits verstrichener Termin von heute wird nach einer Änderung nicht nachgeholt. */
@@ -530,37 +559,41 @@ class Bewaesserungssteuerung extends IPSModule
     // Manuelle Bedienung
     // ======================================================================
 
-    private function startManualLocked(int $idx): void
+    /** @return string leer = ausgeführt, sonst Grund der Ablehnung */
+    private function startManualLocked(int $idx): string
     {
         $zones = $this->zones();
         if (!isset($zones[$idx])) {
-            return;
+            return '';
         }
         $zone = $zones[$idx];
+        if ($this->maintenance()) {
+            return 'Wartungsmodus aktiv – Kugelhähne unter „Wartung – Kugelhähne“ schalten.';
+        }
         if (!$this->GetValue('Active')) {
-            throw new Exception('Master-Schalter ist aus.');
+            return 'Master-Schalter ist aus – Kugelhähne ohne Pumpe lassen sich im Wartungsmodus schalten.';
         }
         if ((int)$this->GetValue('SeqControl') !== 0) {
-            throw new Exception('Automatik-Sequenz läuft – bitte zuerst stoppen.');
+            return 'Automatik-Sequenz läuft – bitte zuerst stoppen.';
         }
         if (!$zone['usable']) {
-            throw new Exception($zone['name'] . ': kein gültiges Ventil konfiguriert.');
+            return $zone['name'] . ': kein gültiges Ventil konfiguriert.';
         }
 
         $manual = $this->readJson('Manual');
         if (in_array($zone['ref'], $manual, true) || $this->zoneIsOpen($zone)) {
-            return;
+            return '';
         }
         // Belegt sind reservierte und noch offene (z. B. gerade schließende) Zonen.
         $occupied = array_unique(array_merge($manual, $this->openZoneRefs()));
         if ($zone['lawn'] && $occupied) {
-            throw new Exception($zone['name'] . ' benötigt den Pumpenkreis exklusiv – bitte zuerst alle anderen Zonen schließen.');
+            return $zone['name'] . ' benötigt den Pumpenkreis exklusiv – bitte zuerst alle anderen Zonen schließen.';
         }
         if (in_array(self::LAWN, $occupied, true)) {
-            throw new Exception('Aktuell läuft ' . $this->lawnName() . ' – bitte warten, bis die Bewässerung fertig ist.');
+            return 'Aktuell läuft ' . $this->lawnName() . ' – bitte warten, bis die Bewässerung fertig ist.';
         }
         if (count($occupied) >= $this->maxParallel()) {
-            throw new Exception('Maximal ' . $this->maxParallel() . ' Zonen gleichzeitig erlaubt.');
+            return 'Maximal ' . $this->maxParallel() . ' Zonen gleichzeitig erlaubt.';
         }
 
         $durID = $this->catVarID('ManualDurCategory', 'ManualDurationZ' . $idx);
@@ -594,23 +627,29 @@ class Bewaesserungssteuerung extends IPSModule
         }
         $this->syncZoneSwitches();
         $this->processLocked();
+        return '';
     }
 
-    private function stopManualLocked(int $idx): void
+    /** @return string leer = ausgeführt, sonst Grund der Ablehnung */
+    private function stopManualLocked(int $idx): string
     {
         $zones = $this->zones();
         if (!isset($zones[$idx])) {
-            return;
+            return '';
         }
         $zone = $zones[$idx];
+        if ($this->maintenance()) {
+            return 'Wartungsmodus aktiv – Kugelhähne unter „Wartung – Kugelhähne“ schalten.';
+        }
         if ((int)$this->GetValue('SeqControl') !== 0) {
-            throw new Exception('Automatik-Sequenz läuft – bitte über die Sequenz-Auswahl stoppen.');
+            return 'Automatik-Sequenz läuft – bitte über die Sequenz-Auswahl stoppen.';
         }
         $this->cancelOps('m' . $zone['ref']);
         $this->releaseManual($zone['ref']);
         $this->closeZoneLocked($zone);
         $this->syncZoneSwitches();
         $this->processLocked();
+        return '';
     }
 
     /**
@@ -643,6 +682,75 @@ class Bewaesserungssteuerung extends IPSModule
     private function releaseManual(int $ref): void
     {
         $this->writeJson('Manual', array_values(array_diff($this->readJson('Manual'), [$ref])));
+    }
+
+    // ======================================================================
+    // Wartungsmodus
+    // ======================================================================
+
+    private function maintenance(): bool
+    {
+        return $this->hasIdent('Maintenance') && (bool)$this->GetValue('Maintenance');
+    }
+
+    private function setMaintenanceLocked(bool $on): void
+    {
+        if ($on === $this->maintenance()) {
+            return;
+        }
+        $this->SetValue('Maintenance', $on);
+        $catID = @$this->GetIDForIdent('MaintenanceCategory');
+        if ($catID !== false) {
+            IPS_SetHidden($catID, !$on);
+        }
+        $this->LogMessage('Wartungsmodus ' . ($on ? 'eingeschaltet' : 'ausgeschaltet'), KL_NOTIFY);
+
+        if ($on) {
+            $this->shutdownLocked('Wartungsmodus aktiv – Pumpe gesperrt');
+            return;
+        }
+        // Alle Kugelhähne schließen, frühestens nach noch laufenden Abschaltschritten.
+        $at = max([$this->now(), ...array_column($this->readJson('Plan'), 'at')]);
+        $ops = [];
+        foreach (array_keys($this->openValves()) as $id) {
+            $ops[] = ['at' => $at, 'op' => 'valve', 'id' => $id, 'on' => false];
+        }
+        $ops[] = ['at' => $at, 'op' => 'done', 'text' => 'Bereit', 'seq' => 0];
+        $this->enqueue($ops, 'sys');
+        $this->processLocked();
+    }
+
+    /** Schaltet im Wartungsmodus einen physischen Kugelhahn direkt (ohne Pumpe). */
+    private function serviceValveLocked(int $phys, bool $open): string
+    {
+        if (!$this->maintenance()) {
+            return 'Kugelhähne lassen sich hier nur im Wartungsmodus schalten.';
+        }
+        $zone = $this->physicalZones()[$phys] ?? null;
+        $id = (int)($zone['ValveInstanceID'] ?? 0);
+        if ($zone === null || $id <= 0 || !IPS_InstanceExists($id)) {
+            return 'Wartung: ' . ($zone['Name'] ?? 'Kugelhahn') . ' hat kein gültiges Ventil.';
+        }
+        if ($this->readJson('Plan')) {
+            return 'Anlage wird noch abgeschaltet – bitte einige Sekunden warten.';
+        }
+        if (!$this->switchValve($id, $open)) {
+            return 'Wartung: ' . $zone['Name'] . ' konnte nicht ' . ($open ? 'geöffnet' : 'geschlossen') . ' werden.';
+        }
+        $this->setIfChanged('Status', 'Wartung: ' . $zone['Name'] . ($open ? ' geöffnet' : ' geschlossen'));
+        return '';
+    }
+
+    /** Zeigt den Grund einer abgelehnten Bedienung im Status an. */
+    private function report(?string $message): void
+    {
+        $message ??= 'Steuerung ist gerade beschäftigt – bitte erneut versuchen.';
+        if ($message === '') {
+            return;
+        }
+        $this->setIfChanged('Status', $message);
+        $this->LogMessage($message, KL_NOTIFY);
+        $this->syncZoneSwitches();
     }
 
     // ======================================================================
@@ -770,7 +878,7 @@ class Bewaesserungssteuerung extends IPSModule
                 }
                 $open = array_keys($this->openValves());
                 $need = $op['need'] ?? $open;
-                if (!array_intersect($need, $open)) {
+                if ($this->maintenance() || !array_intersect($need, $open)) {
                     break; // Zugehöriges Ventil inzwischen geschlossen: Pumpe nicht starten
                 }
                 if (!$this->setPump(true)) {
@@ -852,6 +960,10 @@ class Bewaesserungssteuerung extends IPSModule
 
     private function setPump(bool $on): bool
     {
+        if ($on && $this->maintenance()) {
+            $this->LogMessage('Pumpe im Wartungsmodus gesperrt – Einschaltbefehl verworfen', KL_ERROR);
+            return false;
+        }
         $ok = $this->knx($this->ReadPropertyInteger('PumpInstanceID'), $on);
         $since = $this->ReadAttributeInteger('PumpOnSince');
         if ($on) {
@@ -902,6 +1014,7 @@ class Bewaesserungssteuerung extends IPSModule
      *   Rückmeldung aus (z. B. Trockenlaufschutz), wird abgebrochen.
      * - sonst den Einschaltbefehl jede Minute wiederholen (verlorene Telegramme).
      * Eine Rückmeldung "an" bei abgeschalteter Pumpe wird nur protokolliert.
+     * Im Wartungsmodus wird stattdessen regelmäßig "aus" gesendet.
      */
     private function superviseLocked(): void
     {
@@ -909,6 +1022,19 @@ class Bewaesserungssteuerung extends IPSModule
         $since = $this->ReadAttributeInteger('PumpOnSince');
         $fbID = $this->ReadPropertyInteger('PumpStatusID');
         $fb = ($fbID > 0 && IPS_VariableExists($fbID)) ? (bool)GetValue($fbID) : null;
+
+        if ($this->maintenance()) {
+            // Pumpe gesperrt: Aus-Befehl jede Minute wiederholen, bei Rückmeldung "an" sofort.
+            if ($fb === true && $this->GetBuffer('PumpUnexpected') !== '1') {
+                $this->LogMessage('Pumpe meldet im Wartungsmodus AN – sende Aus-Befehl', KL_WARNING);
+            }
+            $this->SetBuffer('PumpUnexpected', $fb === true ? '1' : '0');
+            if ($fb === true || $now - (int)$this->GetBuffer('PumpAssert') >= self::PUMP_REASSERT) {
+                $this->knx($this->ReadPropertyInteger('PumpInstanceID'), false);
+                $this->SetBuffer('PumpAssert', (string)$now);
+            }
+            return;
+        }
 
         $unexpectedOn = $since === 0 && $fb === true && !$this->readJson('Valves');
         if ($unexpectedOn !== ($this->GetBuffer('PumpUnexpected') === '1')) {
@@ -1227,6 +1353,8 @@ class Bewaesserungssteuerung extends IPSModule
         if ($isNew) {
             $this->SetValue('Active', true);
         }
+        $this->RegisterVariableBoolean('Maintenance', 'Wartungsmodus (Pumpe gesperrt)', '~Switch', 15);
+        $this->EnableAction('Maintenance');
 
         $profile = $this->seqProfile();
         if (!IPS_VariableProfileExists($profile)) {
@@ -1275,11 +1403,15 @@ class Bewaesserungssteuerung extends IPSModule
         $stats = $this->ensureCategory('StatsCategory', 'Statistik', 900);
         $manualCat = $this->ensureCategory('ManualDurCategory', 'Manuelle Laufzeit', 150);
         $planCat = $this->ensureCategory('PlanCategory', 'Nächste Laufzeiten', 60);
+        $serviceCat = $this->ensureCategory('MaintenanceCategory', 'Wartung – Kugelhähne', 160);
+        IPS_SetHidden($serviceCat, !$this->maintenance());
 
         $physical = $this->physicalZones();
         for ($i = 0; $i < self::MAX_ZONES; $i++) {
             $used = isset($physical[$i]);
-            $this->maintainCatVariable($stats, 'CyclesP' . $i, ($used ? $physical[$i]['Name'] : '') . ' – Zyklen Kugelhahn', VARIABLETYPE_INTEGER, 'BWS.Cycles', 200 + $i, $used, false);
+            $name = $used ? $physical[$i]['Name'] : '';
+            $this->maintainCatVariable($stats, 'CyclesP' . $i, $name . ' – Zyklen Kugelhahn', VARIABLETYPE_INTEGER, 'BWS.Cycles', 200 + $i, $used, false);
+            $this->maintainCatVariable($serviceCat, 'ServiceV' . $i, $name, VARIABLETYPE_BOOLEAN, '~Switch', 160 + $i, $used, true);
         }
 
         $zones = $this->zones();
@@ -1332,13 +1464,16 @@ class Bewaesserungssteuerung extends IPSModule
         }
     }
 
-    /** Zonen-Schalter zeigt: manuell belegt oder mindestens ein Ventil offen. */
+    /** Zonen-Schalter: manuell belegt oder Ventil offen; Wartungs-Schalter: Kugelhahn offen. */
     private function syncZoneSwitches(): void
     {
         $manual = $this->readJson('Manual');
         $openIDs = array_keys($this->openValves());
         foreach ($this->zones() as $i => $zone) {
             $this->setIfChanged('ManualZ' . $i, in_array($zone['ref'], $manual, true) || $this->zoneIsOpen($zone, $openIDs));
+        }
+        foreach ($this->physicalZones() as $i => $z) {
+            $this->setVarIfChanged($this->catVarID('MaintenanceCategory', 'ServiceV' . $i), in_array($z['ValveInstanceID'], $openIDs, true));
         }
     }
 
@@ -1482,7 +1617,7 @@ class Bewaesserungssteuerung extends IPSModule
         $now = $this->now();
         $last = $this->ReadAttributeInteger('WaterLastTs');
         $flowID = $this->ReadPropertyInteger('FlowSensorID');
-        if ($last > 0 && $now > $last && $flowID > 0 && IPS_VariableExists($flowID)) {
+        if ($last > 0 && $now > $last && $flowID > 0 && IPS_VariableExists($flowID) && !$this->maintenance()) {
             $liters = max(0.0, $flow ?? (float)GetValue($flowID)) / 60 * ($now - $last);
             if ($liters > 0) {
                 $this->WriteAttributeFloat('WaterRunAccum', $this->ReadAttributeFloat('WaterRunAccum') + $liters);
@@ -1559,14 +1694,11 @@ class Bewaesserungssteuerung extends IPSModule
     // Hilfsfunktionen
     // ======================================================================
 
-    /** Führt $fn unter der Instanzsperre aus; bei Belegung still verwerfen oder Fehler werfen. */
-    private function withLock(callable $fn, bool $throwIfBusy = false)
+    /** Führt $fn unter der Instanzsperre aus; liefert null, wenn die Sperre belegt ist. */
+    private function withLock(callable $fn)
     {
         $name = 'BWS_' . $this->InstanceID;
         if (!IPS_SemaphoreEnter($name, 3000)) {
-            if ($throwIfBusy) {
-                throw new Exception('Steuerung ist gerade beschäftigt – bitte erneut versuchen.');
-            }
             return null;
         }
         try {

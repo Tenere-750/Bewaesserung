@@ -31,6 +31,8 @@ final class Sim
     public static array $instances = [];
     public static array $modules = [];
     public static array $profiles = [];
+    public static array $hidden = [];
+    public static bool $allowManyOpen = false; // Wartungsmodus: Pumpe gesperrt, beliebig viele Ventile
     public static array $watchers = [];     // varId => [instanceId]
     public static array $knx = [];          // [t, id, state]
     public static array $state = [];        // id => bool
@@ -58,6 +60,7 @@ final class Sim
         self::$violations = [];
         self::$writes = 0;
         self::$valves = [];
+        self::$allowManyOpen = false;
     }
 
     public static function create(int $parent, string $ident, string $name, $value): int
@@ -101,7 +104,7 @@ function IPS_SetVariableCustomAction(int $id, int $a): void {}
 function IPS_SetName(int $id, string $n): void { Sim::$obj[$id]['name'] = $n; }
 function IPS_GetName(int $id): string { return Sim::$obj[$id]['name']; }
 function IPS_SetPosition(int $id, int $p): void {}
-function IPS_SetHidden(int $id, bool $h): void {}
+function IPS_SetHidden(int $id, bool $h): void { Sim::$hidden[$id] = $h; }
 function IPS_CreateCategory(): int { return Sim::create(0, '', '', null); }
 function IPS_CreateVariable(int $t): int { return Sim::create(0, '', '', [false, 0, 0.0, ''][$t]); }
 function IPS_SetParent(int $id, int $p): void { Sim::$obj[$id]['parent'] = $p; }
@@ -167,7 +170,7 @@ function KNX_WriteDPT1(int $id, bool $state): bool
         Sim::$pumpOffAt = $t;
     }
     Sim::$state[$id] = $state;
-    if (count(Sim::openValves()) > 2) {
+    if (count(Sim::openValves()) > 2 && !Sim::$allowManyOpen) {
         Sim::$violations[] = "t=$t: " . count(Sim::openValves()) . ' Ventile gleichzeitig offen';
     }
     return true;

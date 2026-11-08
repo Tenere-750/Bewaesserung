@@ -18,6 +18,8 @@ Rasen-Zusammenlegung mehrerer physischer Zonen zu einem logischen Kreis.
 - **Optionaler Bodenfeuchtesensor je Zone**: ist der Boden feucht genug,
   wird die Zone in der Automatik übersprungen (manuell nicht)
 - Master-Schalter
+- **Wartungsmodus** zum Ausblasen der Leitungen: Pumpe gesperrt, jeder
+  Kugelhahn einzeln schaltbar
 - **Vier Automatik-Sequenzen** pro Tag mit frei wählbarem Namen, eigener
   Startzeit und eigenem Automatik-Schalter; Zonenreihenfolge, Dauer,
   Intervall (täglich bis wöchentlich) und „Parallel"-Kopplung je Zeile
@@ -111,6 +113,7 @@ existiert, wird übersprungen und im Instanzstatus gemeldet.
 | Variable | Funktion |
 |---|---|
 | Master-Schalter | Aus = sofortiger geordneter Stopp, Automatik gesperrt |
+| Wartungsmodus (Pumpe gesperrt) | siehe „Wartungsmodus" |
 | Automatik-Sequenz | Stopp / Sequenz 1–4 sofort starten |
 | Status | Klartext, was gerade passiert |
 | Pumpenstatus (Rückmeldung) | Anzeige der verknüpften Rückmelde-Variable |
@@ -118,6 +121,10 @@ existiert, wird übersprungen und im Instanzstatus gemeldet.
 | Restlaufzeit | Minuten bis zum Ende der laufenden Bewässerung |
 | Automatik / Startzeit je Sequenz | Automatikstart ein/aus, Uhrzeit |
 | Zonen-Schalter | manuelle Bewässerung für die eingestellte Dauer; Ausschalten bricht geordnet ab. „Rasen" läuft die komplette Kette ab |
+
+Abgelehnte Bedienungen (z. B. Zone einschalten bei ausgeschaltetem
+Master-Schalter) erscheinen mit Begründung im Status und im
+Meldungsfenster; der Schalter bleibt aus.
 
 Die Sequenzblöcke sind nach Startzeit sortiert; Sequenzen mit
 ausgeschalteter Automatik stehen am Ende, ihre Startzeit ist ausgeblendet.
@@ -129,6 +136,35 @@ Unterkategorien:
   Intervall, letztem Lauf und den aktiven Sequenzen (ohne Bodenfeuchte)
 - **Statistik**: Pumpenlaufzeit heute/gesamt, Zyklen je Kugelhahn,
   Wasserverbrauch letzte Laufzeit/gesamt
+- **Wartung – Kugelhähne**: ein Schalter je physischem Kugelhahn, nur im
+  Wartungsmodus sichtbar
+
+## Wartungsmodus (Leitungen ausblasen)
+
+Zum Ausblasen der Leitungen vor dem Winter lassen sich die Kugelhähne
+verfahren, ohne dass die Pumpe anläuft:
+
+1. **Wartungsmodus** einschalten. Eine laufende Bewässerung wird geordnet
+   beendet (Pumpe aus → Verfahrzeit → Ventile zu); danach erscheint die
+   Unterkategorie „Wartung – Kugelhähne".
+2. Kugelhähne dort einzeln öffnen und schließen – ohne Pumpe, ohne
+   Zeitlimit und ohne Grenze für gleichzeitig offene Hähne, auch die
+   Teilventile von „Rasen" einzeln. Die Zyklenzähler zählen weiter.
+3. **Wartungsmodus** ausschalten: alle Kugelhähne schließen, danach
+   normaler Betrieb.
+
+Solange der Wartungsmodus aktiv ist:
+
+- Die Pumpe wird nie eingeschaltet; das Modul sendet jede Minute einen
+  Aus-Befehl, bei Rückmeldung „an" sofort.
+- Automatik, Sequenzstart und die normalen Zonen-Schalter sind gesperrt.
+  Termine in dieser Zeit verfallen und werden nicht nachgeholt.
+- Der Master-Schalter schließt keine Kugelhähne.
+- Durchfluss (Luft) zählt nicht zum Wasserverbrauch.
+- Nach einem Neustart von IP-Symcon werden alle Kugelhähne geschlossen;
+  der Wartungsmodus bleibt eingeschaltet.
+
+Per Skript: `BWS_SetMaintenance(<InstanzID>, true|false);`
 
 ## Ablauflogik
 
@@ -153,7 +189,8 @@ Unterkategorien:
   Sequenz gestartet, endet die laufende geordnet.
 - **Automatikstart**: Der Termin wird alle 10 s geprüft. Ein verpasster
   Termin (Last, kurzer Ausfall) wird bis 15 Minuten nachgeholt, jeder
-  Termin startet höchstens einmal. Wird eine Startzeit auf eine heute
+  Termin startet höchstens einmal. Termine bei ausgeschaltetem
+  Master-Schalter oder im Wartungsmodus verfallen. Wird eine Startzeit auf eine heute
   bereits verstrichene Uhrzeit gesetzt, startet die Sequenz erst morgen.
 - **Konfiguration übernehmen** während einer Bewässerung beendet diese
   geordnet.
@@ -187,7 +224,8 @@ abarbeitet.
 - „Alles stoppen" sendet immer ein Aus-Telegramm an die Pumpe.
 
 Per Skript: `BWS_StartSequence(<InstanzID>, 1..4);`,
-`BWS_StopAll(<InstanzID>);`, `BWS_ResetCounters(<InstanzID>);`
+`BWS_StopAll(<InstanzID>);`, `BWS_ResetCounters(<InstanzID>);`,
+`BWS_SetMaintenance(<InstanzID>, true|false);`
 
 ## Sensor-Logik
 
@@ -227,7 +265,8 @@ der Sensor sendet. Ohne Durchflusssensor bleiben beide Werte bei 0.
 
 `php tests/run.php` simuliert die IP-Symcon-Umgebung und prüft die
 Abläufe (Sequenzen, manuelle Bedienung, Rasen, Neustart, KNX-Fehler,
-Rückmeldung, Intervall, Zeitplan, Migration, Wasserverbrauch, Formular).
+Rückmeldung, Intervall, Zeitplan, Migration, Wasserverbrauch, Formular,
+Master-Schalter, Wartungsmodus).
 Bei jedem simulierten KNX-Telegramm wird das Schaltschema geprüft. Ein
 Exit-Code 0 bedeutet: alle Prüfungen bestanden. Die Tests ersetzen keinen
 Test mit der echten Anlage.
