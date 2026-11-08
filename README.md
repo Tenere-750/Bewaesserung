@@ -219,8 +219,11 @@ abarbeitet.
   wiederholt; bleibt sie aus (z. B. Trockenlaufschutz), wird nach
   weiteren 20 s abgebrochen. Meldet sie „an", obwohl das Modul sie nicht
   eingeschaltet hat, wird das protokolliert.
-- Während der Bewässerung wird der Einschaltbefehl jede Minute
-  wiederholt, um ein verlorenes Telegramm abzufangen.
+- Während der Bewässerung wird jede Minute erneut eingeschaltet – nach
+  dem Einschaltschema: offene Ventile erneut auf, Pumpe erst nach der
+  Verfahrzeit. Das fängt verlorene Telegramme ab und einen kurzen
+  Spannungsausfall, bei dem die stromlos schließenden Kugelhähne zugefahren
+  sind; die Pumpe läuft dabei nie gegen geschlossene Hähne an.
 - „Alles stoppen" sendet immer ein Aus-Telegramm an die Pumpe.
 
 Per Skript: `BWS_StartSequence(<InstanzID>, 1..4);`,
@@ -278,5 +281,16 @@ Test mit der echten Anlage.
   Signatur ist nur die Methode `knx()` anzupassen.
 - Rückmeldungen der Ventile werden nicht ausgewertet; ein Ventil gilt als
   offen, sobald der Schaltbefehl erfolgreich gesendet wurde.
+- Die Motorkugelhähne sind stromlos geschlossen (NC): bei Spannungsausfall
+  fahren sie zu. Offen lassen über längere Zeit (z. B. im Winter) ist daher
+  nicht möglich.
+
+### Empfehlung für die KNX-Aktoren (ETS)
+
+Verhalten bei Bus-/Netzspannungswiederkehr für den **Pumpenkanal auf
+„Aus"** stellen. Sonst kann die Pumpe nach einem Spannungsausfall sofort
+anlaufen, während die NC-Kugelhähne noch geschlossen sind. Das Modul
+schaltet danach selbst wieder ein – Ventile zuerst, Pumpe nach der
+Verfahrzeit. Für die Ventilkanäle ist „Aus" ebenfalls die sichere Wahl.
 
 Änderungen siehe [CHANGELOG.md](CHANGELOG.md).

@@ -1,5 +1,16 @@
 # Changelog
 
+## 4.1.1
+
+- Überwachung für stromlos schließende Kugelhähne (NC): Die minütliche
+  Wiederholung öffnet zuerst die Ventile erneut und schaltet die Pumpe
+  erst nach der Verfahrzeit ein. Zuvor konnte die Pumpe nach einem kurzen
+  Spannungsausfall gegen zugefahrene Hähne anlaufen. Dasselbe gilt für das
+  erneute Einschalten nach einer Pumpen-Rückmeldung „aus".
+- Eine Wiederholung startet die Pumpe nicht mehr, wenn sie inzwischen
+  regulär abgeschaltet wurde.
+- README: Hinweis auf NC-Kugelhähne und ETS-Empfehlung für den Pumpenkanal.
+
 ## 4.1.0
 
 - **Wartungsmodus** (WebFront-Schalter bzw. `BWS_SetMaintenance`): beendet

@@ -878,7 +878,8 @@ class Bewaesserungssteuerung extends IPSModule
                 }
                 $open = array_keys($this->openValves());
                 $need = $op['need'] ?? $open;
-                if ($this->maintenance() || !array_intersect($need, $open)) {
+                $stale = !empty($op['reassert']) && $this->ReadAttributeInteger('PumpOnSince') === 0;
+                if ($this->maintenance() || $stale || !array_intersect($need, $open)) {
                     break; // Zugehöriges Ventil inzwischen geschlossen: Pumpe nicht starten
                 }
                 if (!$this->setPump(true)) {
@@ -1010,9 +1011,9 @@ class Bewaesserungssteuerung extends IPSModule
 
     /**
      * Pumpenüberwachung (Takt 10 s), solange bewässert wird:
-     * - Rückmeldung "aus": Einschaltbefehl einmal wiederholen; bleibt die
+     * - Rückmeldung "aus": einmal erneut einschalten; bleibt die
      *   Rückmeldung aus (z. B. Trockenlaufschutz), wird abgebrochen.
-     * - sonst den Einschaltbefehl jede Minute wiederholen (verlorene Telegramme).
+     * - sonst jede Minute erneut einschalten (verlorene Telegramme, Spannungsausfall).
      * Eine Rückmeldung "an" bei abgeschalteter Pumpe wird nur protokolliert.
      * Im Wartungsmodus wird stattdessen regelmäßig "aus" gesendet.
      */
@@ -1048,13 +1049,12 @@ class Bewaesserungssteuerung extends IPSModule
             return;
         }
 
-        $pumpID = $this->ReadPropertyInteger('PumpInstanceID');
         if ($fb === false && $now - $since > self::PUMP_GRACE) {
             $offSince = (int)$this->GetBuffer('PumpFbOff');
             if ($offSince === 0) {
                 $this->SetBuffer('PumpFbOff', (string)$now);
-                $this->LogMessage('Pumpe meldet AUS, obwohl sie laufen soll – sende Einschaltbefehl erneut', KL_WARNING);
-                $this->knx($pumpID, true);
+                $this->LogMessage('Pumpe meldet AUS, obwohl sie laufen soll – schalte erneut ein', KL_WARNING);
+                $this->reassertRun();
             } elseif ($now - $offSince >= self::PUMP_GRACE) {
                 $this->fault('Pumpe meldet trotz Einschaltbefehl AUS – Bewässerung abgebrochen.');
             }
@@ -1062,9 +1062,24 @@ class Bewaesserungssteuerung extends IPSModule
         }
         $this->SetBuffer('PumpFbOff', '');
         if ($now - (int)$this->GetBuffer('PumpAssert') >= self::PUMP_REASSERT) {
-            $this->knx($pumpID, true);
-            $this->SetBuffer('PumpAssert', (string)$now);
+            $this->reassertRun();
         }
+    }
+
+    /**
+     * Wiederholt den Laufzustand nach dem Einschaltschema: offene Ventile
+     * erneut auf, Pumpe erst nach der Verfahrzeit. Stromlos schließende
+     * Kugelhähne können nach einem Spannungsausfall zu sein, ohne dass das
+     * Modul es erfährt; die Pumpe darf dann nicht sofort anlaufen.
+     */
+    private function reassertRun(): void
+    {
+        $open = array_keys($this->openValves());
+        foreach ($open as $id) {
+            $this->knx($id, true);
+        }
+        $this->enqueue([['at' => $this->now() + $this->maxTravel($open), 'op' => 'pump', 'on' => true, 'need' => $open, 'reassert' => true]], 'sys');
+        $this->SetBuffer('PumpAssert', (string)$this->now());
     }
 
     // ======================================================================

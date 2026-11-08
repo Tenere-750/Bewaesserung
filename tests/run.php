@@ -105,20 +105,16 @@ function setVar(IPSModule $m, string $ident, $value): void
     Sim::$obj[varID($m, $ident)]['value'] = $value;
 }
 
-/** Schaltfolge relativ zu $t0; wiederholte Pumpenbefehle gleichen Werts (Watchdog) entfallen. */
+/** Schaltfolge relativ zu $t0; Wiederholungen gleichen Werts (Überwachung) entfallen. */
 function events(int $t0, ?int $from = null): string
 {
     $out = [];
-    $pump = null;
+    $last = [];
     foreach (Sim::$knx as [$t, $id, $state]) {
-        if ($from !== null && $t < $from) {
+        $repeat = ($last[$id] ?? null) === $state;
+        $last[$id] = $state;
+        if ($repeat || ($from !== null && $t < $from)) {
             continue;
-        }
-        if ($id === PUMP) {
-            if ($pump === $state) {
-                continue;
-            }
-            $pump = $state;
         }
         $out[] = Sim::label($id) . '@' . ($t - $t0) . '=' . (int)$state;
     }
@@ -301,7 +297,7 @@ $fb = Sim::create(1, 'fb', 'Pumpe Rückmeldung', false);
 $m->props['PumpStatusID'] = $fb;
 $m->ApplyChanges();
 run($m, 3600 + 120);
-check('Rückmeldung bleibt AUS -> Befehl wiederholt, dann Abbruch', logged($m, KL_WARNING, 'sende Einschaltbefehl erneut') && str_contains(val($m, 'Status'), 'Pumpe meldet') && idle(), val($m, 'Status'));
+check('Rückmeldung bleibt AUS -> Befehl wiederholt, dann Abbruch', logged($m, KL_WARNING, 'schalte erneut ein') && str_contains(val($m, 'Status'), 'Pumpe meldet') && idle(), val($m, 'Status'));
 noViolations();
 $m = setup([row(valve(1), 3)]);
 $fb = Sim::create(1, 'fb', 'Pumpe Rückmeldung', false);
@@ -540,6 +536,30 @@ $m->MessageSink($t, 0, IPS_KERNELMESSAGE, [KR_READY]);
 run($m, 30);
 check('Neustart im Wartungsmodus: Kugelhähne zu, Modus bleibt aktiv', idle() && val($m, 'Maintenance') === true && !array_filter(Sim::$knx, fn ($e) => $e[0] >= $t && $e[1] === PUMP && $e[2]));
 check('Skriptfunktion BWS_SetMaintenance', (function () use ($m) { $m->SetMaintenance(false); return val($m, 'Maintenance') === false; })());
+
+section('21 Stromausfall an Ventilen und Pumpe (NC-Kugelhähne)');
+// Hähne fahren stromlos zu, die Aktoren kommen auf "Aus" zurück; das Modul erfährt davon nichts.
+$m = setup([row(valve(1), 10)]);
+run($m, 3600 + 120);
+$t = Sim::$t;
+Sim::$state = [];
+Sim::$knx = [];
+Sim::$violations = [];
+run($m, 120);
+$after = events($t, $t);
+check('Überwachung öffnet erst die Ventile, Pumpe frühestens nach der Verfahrzeit', preg_match('/^V1@(\d+)=1 P@(\d+)=1/', $after, $mm) === 1 && $mm[2] - $mm[1] >= 7, $after);
+noViolations();
+$m = setup([], ['ManualMaxMinutes' => 0], null, false);
+Sim::$t = T0;
+$m->RequestAction('ManualZ0', true);
+for ($i = 0; $i < 200 && !array_filter(json_decode($m->attrs['Plan'], true), fn ($op) => $op['src'] === 'sys'); $i++) {
+    run($m, 1);
+}
+$t = Sim::$t;
+$m->RequestAction('ManualZ0', false);
+run($m, 30);
+check('Zone direkt nach einer Wiederholung gestoppt: Pumpe startet nicht erneut', events($t, $t) === 'P@0=0 V1@7=0', events($t, $t));
+noViolations();
 
 echo "\nErgebnis: $pass bestanden, $fail fehlgeschlagen\n";
 exit($fail === 0 ? 0 : 1);
